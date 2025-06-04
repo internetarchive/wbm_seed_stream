@@ -1,0 +1,8 @@
+# Python
+__pycache__
+
+# Security
+.env
+
+# MacOS
+.DS_Store
