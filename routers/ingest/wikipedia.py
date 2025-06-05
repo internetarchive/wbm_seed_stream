@@ -23,6 +23,7 @@ def ingest_url(source: str, req: URLIngestRequest, db: Session):
     url_obj.source = source
     url_obj.meta = req.meta
     url_obj.priority = req.priority or 0
+    url_obj.last_modified = req.last_modified
     db.add(url_obj)
     db.commit()
     db.refresh(url_obj)

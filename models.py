@@ -15,4 +15,5 @@ class URL(Base):
     received_at = Column(DateTime, nullable=False, server_default=func.now())
     status = Column(String(16), nullable=False, default='pending')
     priority = Column(Integer, nullable=False, default=0)
-    meta = Column(JSON) 
+    meta = Column(JSON)
+    last_modified = Column(DateTime, nullable=True)
