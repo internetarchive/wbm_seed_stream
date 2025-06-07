@@ -7,6 +7,7 @@ class URLIngestRequest(BaseModel):
     meta: Optional[Any] = None
     priority: Optional[int] = 0
     last_modified: Optional[datetime] = None
+    source: str
 
 class URLResponse(BaseModel):
     id: int

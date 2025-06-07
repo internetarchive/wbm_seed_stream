@@ -4,7 +4,7 @@ import logging
 from urllib.parse import urlparse
 from email.utils import parsedate_to_datetime
 
-INGEST_API_URL = "http://localhost:8000/api/ingest/wikipedia"
+INGEST_API_URL = "http://localhost:8000/api/ingest"
 WIKI_API_URL = "https://en.wikipedia.org/w/api.php"
 SLEEP_INTERVAL = 30
 
@@ -70,7 +70,7 @@ def should_ingest_wiki_url(url_path):
         url_path.startswith("/wiki/User:")
     )
     
-def ingest_url(url, meta, priority=0):
+def ingest_url(url, meta, priority=0, source="wikipedia"):
     parsed_url = urlparse(url)
 
     if parsed_url.netloc in ["web.archive.org", "archive.today"]:
@@ -94,6 +94,7 @@ def ingest_url(url, meta, priority=0):
 
     payload = {
         "url": url,
+        "source": source,  # Added: include source in payload
         "meta": meta,
         "priority": priority,
         "last_modified": last_modified  # always include it, even if None
@@ -124,7 +125,7 @@ def run_collector():
                 "change": change,
                 "source": "wikipedia"
             }
-            ingest_url(wiki_url, meta)
+            ingest_url(wiki_url, meta, source="wikipedia")  # Specify source
 
             ext_links = fetch_external_links(title)
             for ext_link in ext_links:
@@ -132,7 +133,7 @@ def run_collector():
                     "source_article": wiki_url,
                     "source": "wikipedia_reference"
                 }
-                ingest_url(ext_link, ext_meta, priority=1)
+                ingest_url(ext_link, ext_meta, priority=1, source="wikipedia")  # Specify source
 
         rccontinue = data.get('continue', {}).get('rccontinue')
         time.sleep(SLEEP_INTERVAL)
