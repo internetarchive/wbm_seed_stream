@@ -2,15 +2,12 @@ import requests
 import time
 import logging
 from urllib.parse import urlparse
-from email.utils import parsedate_to_datetime
 
 INGEST_API_URL = "http://localhost:8000/api/ingest"
 WIKI_API_URL = "https://en.wikipedia.org/w/api.php"
 SLEEP_INTERVAL = 30
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
-
-# TODO: parallelizability 
 
 def fetch_recent_changes(rccontinue=None):
     params = {
@@ -82,22 +79,11 @@ def ingest_url(url, meta, priority=0, source="wikipedia"):
         logging.info(f"Skipped (filtered): {url}")
         return
 
-    last_modified = None
-    try:
-        head_resp = requests.head(url, timeout=5, allow_redirects=True)
-        last_mod_header = head_resp.headers.get("Last-Modified")
-        if last_mod_header:
-            last_modified = parsedate_to_datetime(last_mod_header).isoformat()
-    except Exception as e:
-        logging.warning(f"Failed to fetch Last-Modified for {url}: {e}")
-        last_modified = None  # explicitly set to None on error
-
     payload = {
         "url": url,
-        "source": source,  # Added: include source in payload
+        "source": source,
         "meta": meta,
-        "priority": priority,
-        "last_modified": last_modified  # always include it, even if None
+        "priority": priority
     }
 
     try:
@@ -125,7 +111,7 @@ def run_collector():
                 "change": change,
                 "source": "wikipedia"
             }
-            ingest_url(wiki_url, meta, source="wikipedia")  # Specify source
+            ingest_url(wiki_url, meta, source="wikipedia")
 
             ext_links = fetch_external_links(title)
             for ext_link in ext_links:
@@ -133,7 +119,7 @@ def run_collector():
                     "source_article": wiki_url,
                     "source": "wikipedia_reference"
                 }
-                ingest_url(ext_link, ext_meta, priority=1, source="wikipedia")  # Specify source
+                ingest_url(ext_link, ext_meta, priority=1, source="wikipedia")
 
         rccontinue = data.get('continue', {}).get('rccontinue')
         time.sleep(SLEEP_INTERVAL)
@@ -158,4 +144,15 @@ believe that this is likely already happening. The reason that I am perhaps not 
 to be archived is potentially because:
     - a. the wayback machine is seeing that URL around about the same time that I am seeing it.
     - b. they index wikipedia over perhaps the process of one hour during the day and not in a perhaps real time fashion.
+    
+ASK: Understand Goals. Is the goal to be detecting and saving a wikipedia page everytime the content has changed? This
+might happen like a 1000 times a day for exmaple. Or is the goal more importantly to be detecting spammy content and
+prevent that from getting archived / prioritized? I guess what I'm trying to ask if the approach is focused on getting
+the best content or the getting rid of the worst? Both is best of course but where's the focus?
+    
+TODO: Last Modified here does not necessarily mean what it means in the other files. Initially, in wikipedia it was meant to
+check the HTTP header but here it is meant to check when the record was last modified by the database, so I should look
+into that. 
+
+TODO: Parallelizability    
 """

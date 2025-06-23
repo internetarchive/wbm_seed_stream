@@ -1,0 +1,97 @@
+{
+  "total_urls": 310655,
+  "spam_likely": 0,
+  "spam_percentage": 0.0,
+  "high_quality": 18670,
+  "high_quality_percentage": 6.009882345367047,
+  "high_priority": 1238,
+  "high_priority_percentage": 0.39851281968743457,
+  "unique_domains": 8830,
+  "top_domains": [
+    [
+      "lamdongtv",
+      8591
+    ],
+    [
+      "industriemagazin",
+      7170
+    ],
+    [
+      "agenzianova",
+      7090
+    ],
+    [
+      "yahoo",
+      3836
+    ],
+    [
+      "goo",
+      3470
+    ],
+    [
+      "blackperspective",
+      2872
+    ],
+    [
+      "amarujala",
+      2740
+    ],
+    [
+      "hispanic-today",
+      2631
+    ],
+    [
+      "tribunnews",
+      2245
+    ],
+    [
+      "sa24",
+      2242
+    ]
+  ],
+  "common_flags": [
+    [
+      "good_title_length",
+      300730
+    ],
+    [
+      "high_domain_frequency",
+      294541
+    ],
+    [
+      "https",
+      285459
+    ],
+    [
+      "proper_capitalization",
+      228834
+    ],
+    [
+      "clean_url_structure",
+      227496
+    ],
+    [
+      "established_tld",
+      150874
+    ],
+    [
+      "content_indicator_in_path",
+      81242
+    ],
+    [
+      "very_long_url",
+      19701
+    ],
+    [
+      "suspicious_title_pattern",
+      2613
+    ],
+    [
+      "excessive_caps",
+      1419
+    ]
+  ],
+  "avg_spam_score": 0.008937567397913527,
+  "avg_quality_score": 0.4977021132765446,
+  "avg_priority_score": 0.22039168852885485
+}

@@ -184,5 +184,7 @@ if __name__ == "__main__":
     main()
     
 """
-Need some way to ignore certain domains like youtube.com/sdlks/?v= or something perhaps
+Notes:
+- Need some way to ignore certain domains like youtube.com/sdlks/?v= or something perhaps?
+- You don't need to be not archiving youtube pages apparently?
 """

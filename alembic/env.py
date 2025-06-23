@@ -1,27 +1,28 @@
 from logging.config import fileConfig
-
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
-
 from alembic import context
+from models import Base
+import os
+from dotenv import load_dotenv
 
-
-from models import Base 
+load_dotenv()
 
 config = context.config
 
-
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+database_url = os.getenv('DATABASE_URL')
+if database_url:
+    config.set_main_option('sqlalchemy.url', database_url)
 
 target_metadata = Base.metadata # type: ignore
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
-
     This configures the context with just a URL
     and not an Engine, so no DBAPI is needed.
-
     Calls to context.execute() here emit the given string to the
     script output.
     """
@@ -32,14 +33,11 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
-
     with context.begin_transaction():
         context.run_migrations()
 
-
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode.
-
     Creates an Engine and associates a connection with the context.
     """
     connectable = engine_from_config(
@@ -47,16 +45,13 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-
     with connectable.connect() as connection: # type: ignore
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
         )
-
         with context.begin_transaction():
             context.run_migrations()
-
 
 if context.is_offline_mode():
     run_migrations_offline()

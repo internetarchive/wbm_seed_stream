@@ -53,9 +53,9 @@ def parse_rss_feed(feed_url):
         root = ET.fromstring(resp.content)
         items = []
         
-        # Handle different RSS formats
+
         if root.tag == 'rss':
-            # Standard RSS 2.0
+            # RSS 2.0
             for item in root.findall('.//item'):
                 items.append(parse_rss_item(item))
         elif root.tag.endswith('RDF') or 'rdf' in root.tag.lower():
@@ -80,7 +80,6 @@ def parse_rss_item(item):
     }
 
 def parse_rdf_item(item):
-    """Parse an RDF/RSS 1.0 item"""
     return {
         'title': get_text(item.find('.//{http://purl.org/rss/1.0/}title')),
         'link': get_text(item.find('.//{http://purl.org/rss/1.0/}link')),
@@ -109,24 +108,13 @@ def ingest_url(url, meta, priority=0, source="rss"):
     if not should_ingest_url(url):
         logging.info(f"Skipped (filtered): {url}")
         return
-
-    # Try to get Last-Modified header
-    last_modified = None
-    try:
-        head_resp = requests.head(url, timeout=5, allow_redirects=True)
-        last_mod_header = head_resp.headers.get("Last-Modified")
-        if last_mod_header:
-            last_modified = parsedate_to_datetime(last_mod_header).isoformat()
-    except Exception as e:
-        logging.warning(f"Failed to fetch Last-Modified for {url}: {e}")
-        last_modified = None
-
+        
     payload = {
         "url": url,
         "source": source,
         "meta": meta,
         "priority": priority,
-        "last_modified": last_modified
+        "last_modified": None
     }
 
     try:
@@ -145,10 +133,8 @@ def process_feed(feed_url, seen_items):
     new_items_count = 0
     
     for item in items:
-        item_hash = get_item_hash(item)
-        
+        item_hash = get_item_hash(item) 
         if item_hash not in seen_items:
-            # New item found
             article_url = item.get('link', '')
             if article_url:
                 meta = {
@@ -188,8 +174,6 @@ def run_collector():
         
         elapsed_time = time.time() - start_time
         logging.info(f"Collection cycle completed in {elapsed_time:.2f} seconds")
-        
-        # Sleep until next cycle
         time.sleep(SLEEP_INTERVAL)
 
 if __name__ == "__main__":
@@ -200,7 +184,6 @@ if __name__ == "__main__":
         run_collector()
     except KeyboardInterrupt:
         logging.info("Shutting down RSS collector.")
-
 
 """
 Notes:
