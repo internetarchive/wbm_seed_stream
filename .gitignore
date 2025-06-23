@@ -12,3 +12,5 @@ __pycache__
 
 # Project-Specific
 logs
+.json
+.txt
