@@ -16,5 +16,6 @@ logs
 *.txt
 
 # Large Files
-.png
+*.png
 data
+*.pkl
