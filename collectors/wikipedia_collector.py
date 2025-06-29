@@ -39,7 +39,7 @@ def fetch_external_links(title, elcontinue=None):
         }
         if elcontinue:
             params["elcontinue"] = elcontinue
-            
+
         try:
             resp = requests.get(WIKI_API_URL, params=params, timeout=10)
             resp.raise_for_status()
@@ -58,7 +58,7 @@ def fetch_external_links(title, elcontinue=None):
             elcontinue = data["continue"]["elcontinue"]
         else:
             break
-            
+
     return links
 
 def should_ingest_wiki_url(url_path):
@@ -66,7 +66,7 @@ def should_ingest_wiki_url(url_path):
         url_path.startswith("/wiki/Category:") or
         url_path.startswith("/wiki/User:")
     )
-    
+
 def ingest_url(url, meta, priority=0, source="wikipedia"):
     parsed_url = urlparse(url)
 
@@ -129,14 +129,14 @@ if __name__ == "__main__":
         run_collector()
     except KeyboardInterrupt:
         logging.info("Shutting down Wikipedia collector.")
-        
+
 """
 Notes:
 
 The event stream includes virtually all changes across all of wikipedia. Many articles are edited many times a day,
 that does not mean that the Internet Archive should try and actually archive those articles every single time there
 is a change. Therefore, while in the preliminary stages ingesting all of these URLs is helpful, with time we will need
-to determine when there have been significant enough changes to a wikipedia article that a save is warranted. 
+to determine when there have been significant enough changes to a wikipedia article that a save is warranted.
 
 For URLs that are added as references to wikipedia however, if it has not been archived before, we should archive it.
 If the last modified header is after when the internet archive last saved it, we should archive it. However, I do
@@ -144,15 +144,15 @@ believe that this is likely already happening. The reason that I am perhaps not 
 to be archived is potentially because:
     - a. the wayback machine is seeing that URL around about the same time that I am seeing it.
     - b. they index wikipedia over perhaps the process of one hour during the day and not in a perhaps real time fashion.
-    
+
 ASK: Understand Goals. Is the goal to be detecting and saving a wikipedia page everytime the content has changed? This
 might happen like a 1000 times a day for exmaple. Or is the goal more importantly to be detecting spammy content and
 prevent that from getting archived / prioritized? I guess what I'm trying to ask if the approach is focused on getting
 the best content or the getting rid of the worst? Both is best of course but where's the focus?
-    
+
 TODO: Last Modified here does not necessarily mean what it means in the other files. Initially, in wikipedia it was meant to
 check the HTTP header but here it is meant to check when the record was last modified by the database, so I should look
-into that. 
+into that.
 
-TODO: Parallelizability    
+TODO: Parallelizability
 """

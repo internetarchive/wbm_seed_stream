@@ -268,3 +268,50 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+"""
+Notes:
+
+- uBlockOrigin
+- convert domain names to SURT - this is how the CDX API gives the url in its arguments / params
+- gives a tree like structure, left signifies priority
+- top level domain comes towards the right-most side.
+
+- you can use this to build a trie-data structure? based on individual segments of the url (instead of characteristics)
+- this will be suitable if it fits in memory, helps with 
+- key-value data store --> can use redis for in-memory.
+
+- https://github.com/internetarchive/surt
+- I heard that arquivo.pt is using Yake, 
+a new keyword extraction algorithm, to categorize
+its archived web pages. Maybe it can also help
+with your web page classifier? https://github.com/LIAAD/yake/
+
+- project format:
+- things that are really really spammy ignore, everything else categorize and crawl by creating a .parquet file for archiving jobs.
+- this can be provided as a stream for people. 
+- on wednesdays, typically expect 30% more data. weekdays is typically more data -- this is for both index now and media cloud.
+- AGPL v3 license.
+- Put the media cloud URL in the .env
+
+- spits out different parts of the URL, categorizations and classification.
+- start with a tech report for publication. 
+- if we're querying for headers, we might as well be archiving the page.
+- certificate transparency logs for canonical domains.
+
+- archiving malicious pages, and NSFW content as well. safely exclude .xxx tld for example because it's basically only NSFW.
+- minimal efforts in archiving malware, but they do get 
+
+- Here is the exclusion list used by many Zeno crawls - https://archive.org/download/global-crawling-exclusions/exclusions.txt
+- Last week, I built a TF-IDF based spam classifier to identify spam articles on a blog platform (xlog.app). The biggest problem
+  I encountered was that keyword-based detection was difficult to distinguish LLM SPAM from real articles.
+
+- facebook doesn't cooperate (so not archiving 429, 503)
+- no respect for robots.txt on .gov and some other domain?
+- robots.txt has sort of been used as a wildcard blocker 
+
+https://blog.archive.org/2016/12/17/robots-txt-gov-mil-websites/
+https://blog.archive.org/2017/04/17/robots-txt-meant-for-search-engines-dont-work-well-for-web-archives/
+Both relevant to how we think about crawling
+- mime sniffing.
+"""

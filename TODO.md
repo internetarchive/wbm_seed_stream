@@ -1,0 +1,2 @@
+- [ ] Pyright `query.xyz` errors
+- [ ] What is the cost of an archiving operation? How do we measure that? 

@@ -14,3 +14,7 @@ __pycache__
 logs
 *.json
 *.txt
+
+# Large Files
+.png
+data
