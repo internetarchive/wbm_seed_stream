@@ -29,7 +29,7 @@ def ingest_url(req: URLIngestRequest, response: Response, db: Session = Depends(
     if req.source not in SOURCES:
         raise HTTPException(status_code=400, detail=f"Invalid source. Must be one of: {', '.join(SOURCES)}")
     
-    existing = db.query(URL).filter(URL.url == str(req.url)).first() #pyright: ignore[reportOptionalCall]
+    existing = db.query(URL).filter(URL.url == str(req.url)).first() 
     if existing:
         one_week_ago = datetime.utcnow() - timedelta(weeks=1)
         if existing.last_modified and existing.last_modified < one_week_ago:
@@ -61,7 +61,7 @@ def ingest_url(req: URLIngestRequest, response: Response, db: Session = Depends(
 
 @router.get("/ingest/{url_id}", response_model=URLResponse)
 def get_ingested_url(url_id: int, db: Session = Depends(get_db)):
-    url_obj = db.query(URL).filter(URL.id == url_id).first() #pyright: ignore[reportOptionalCall]
+    url_obj = db.query(URL).filter(URL.id == url_id).first() 
     if not url_obj:
         raise HTTPException(
             status_code=404, 
@@ -83,8 +83,8 @@ def get_ingested_urls(
                 status_code=400, 
                 detail=f"Invalid source filter. Must be one of: {', '.join(SOURCES)}"
             )
-        query = query.filter(URL.source == source) #pyright: ignore[reportOptionalCall]
-    urls = query.offset(skip).limit(limit).all() #pyright: ignore[reportOptionalCall]
+        query = query.filter(URL.source == source) 
+    urls = query.offset(skip).limit(limit).all() 
     return urls
 
 @router.post("/filter-rules", response_model=FilterRuleResponse)
@@ -98,7 +98,7 @@ def create_filter_rule(req: FilterRuleRequest, response: Response, db: Session =
     existing = db.query(FilterRule).filter(
         FilterRule.pattern == req.pattern,
         FilterRule.rule_type == req.rule_type
-    ).first() #pyright: ignore[reportOptionalCall]
+    ).first() 
     
     if existing:
         raise HTTPException(
@@ -124,7 +124,7 @@ def create_filter_rule(req: FilterRuleRequest, response: Response, db: Session =
 
 @router.get("/filter-rules/{rule_id}", response_model=FilterRuleResponse)
 def get_filter_rule(rule_id: int, db: Session = Depends(get_db)):
-    rule_obj = db.query(FilterRule).filter(FilterRule.id == rule_id).first() #pyright: ignore[reportOptionalCall]
+    rule_obj = db.query(FilterRule).filter(FilterRule.id == rule_id).first() 
     if not rule_obj:
         raise HTTPException(
             status_code=404,
@@ -149,20 +149,20 @@ def get_filter_rules(
                 status_code=400,
                 detail=f"Invalid rule_type filter. Must be one of: {', '.join(RULE_TYPES)}"
             )
-        query = query.filter(FilterRule.rule_type == rule_type) #pyright: ignore[reportOptionalCall]
+        query = query.filter(FilterRule.rule_type == rule_type) 
     
     if is_active is not None:
-        query = query.filter(FilterRule.is_active == is_active) #pyright: ignore[reportOptionalCall]
+        query = query.filter(FilterRule.is_active == is_active) 
     
     if source_file:
-        query = query.filter(FilterRule.source_file == source_file) #pyright: ignore[reportOptionalCall]
+        query = query.filter(FilterRule.source_file == source_file) 
     
-    rules = query.offset(skip).limit(limit).all() #pyright: ignore[reportOptionalCall]
+    rules = query.offset(skip).limit(limit).all() 
     return rules
 
 @router.put("/filter-rules/{rule_id}", response_model=FilterRuleResponse)
 def update_filter_rule(rule_id: int, req: FilterRuleRequest, db: Session = Depends(get_db)):
-    rule_obj = db.query(FilterRule).filter(FilterRule.id == rule_id).first() #pyright: ignore[reportOptionalCall]
+    rule_obj = db.query(FilterRule).filter(FilterRule.id == rule_id).first() 
     if not rule_obj:
         raise HTTPException(
             status_code=404,
@@ -191,7 +191,7 @@ def update_filter_rule(rule_id: int, req: FilterRuleRequest, db: Session = Depen
 
 @router.delete("/filter-rules/{rule_id}")
 def delete_filter_rule(rule_id: int, db: Session = Depends(get_db)):
-    rule_obj = db.query(FilterRule).filter(FilterRule.id == rule_id).first() #pyright: ignore[reportOptionalCall]
+    rule_obj = db.query(FilterRule).filter(FilterRule.id == rule_id).first() 
     if not rule_obj:
         raise HTTPException(
             status_code=404,
@@ -216,7 +216,7 @@ def create_blocked_url(req: BlockedURLRequest, response: Response, db: Session =
             detail=f"Invalid source. Must be one of: {', '.join(SOURCES)}"
         )
     
-    existing = db.query(BlockedURL).filter(BlockedURL.url == req.url).first() #pyright: ignore[reportOptionalCall]
+    existing = db.query(BlockedURL).filter(BlockedURL.url == req.url).first() 
     if existing:
         raise HTTPException(
             status_code=409,
@@ -251,7 +251,7 @@ def create_blocked_url(req: BlockedURLRequest, response: Response, db: Session =
 
 @router.get("/blocked-urls/{blocked_id}", response_model=BlockedURLResponse)
 def get_blocked_url(blocked_id: int, db: Session = Depends(get_db)):
-    blocked_obj = db.query(BlockedURL).filter(BlockedURL.id == blocked_id).first() #pyright: ignore[reportOptionalCall]
+    blocked_obj = db.query(BlockedURL).filter(BlockedURL.id == blocked_id).first() 
     if not blocked_obj:
         raise HTTPException(
             status_code=404,
@@ -272,7 +272,7 @@ def get_blocked_urls(
     query = db.query(BlockedURL)
     
     if domain:
-        query = query.filter(BlockedURL.domain == domain) #pyright: ignore[reportOptionalCall]
+        query = query.filter(BlockedURL.domain == domain) 
     
     if block_reason:
         if block_reason not in BLOCK_REASONS:
@@ -280,7 +280,7 @@ def get_blocked_urls(
                 status_code=400,
                 detail=f"Invalid block_reason filter. Must be one of: {', '.join(BLOCK_REASONS)}"
             )
-        query = query.filter(BlockedURL.block_reason == block_reason) #pyright: ignore[reportOptionalCall]
+        query = query.filter(BlockedURL.block_reason == block_reason) 
     
     if source:
         if source not in SOURCES:
@@ -288,17 +288,17 @@ def get_blocked_urls(
                 status_code=400,
                 detail=f"Invalid source filter. Must be one of: {', '.join(SOURCES)}"
             )
-        query = query.filter(BlockedURL.source == source) #pyright: ignore[reportOptionalCall]
+        query = query.filter(BlockedURL.source == source) 
     
     if matched_rule_id:
-        query = query.filter(BlockedURL.matched_rule_id == matched_rule_id) #pyright: ignore[reportOptionalCall]
+        query = query.filter(BlockedURL.matched_rule_id == matched_rule_id) 
     
-    blocked_urls = query.offset(skip).limit(limit).all() #pyright: ignore[reportOptionalCall]
+    blocked_urls = query.offset(skip).limit(limit).all() 
     return blocked_urls
 
 @router.delete("/blocked-urls/{blocked_id}")
 def delete_blocked_url(blocked_id: int, db: Session = Depends(get_db)):
-    blocked_obj = db.query(BlockedURL).filter(BlockedURL.id == blocked_id).first() #pyright: ignore[reportOptionalCall]
+    blocked_obj = db.query(BlockedURL).filter(BlockedURL.id == blocked_id).first() 
     if not blocked_obj:
         raise HTTPException(
             status_code=404,
@@ -311,7 +311,7 @@ def delete_blocked_url(blocked_id: int, db: Session = Depends(get_db)):
 
 @router.get("/blocked-urls/check/{url:path}")
 def check_url_blocked(url: str, db: Session = Depends(get_db)):
-    blocked = db.query(BlockedURL).filter(BlockedURL.url == url).first() #pyright: ignore[reportOptionalCall]
+    blocked = db.query(BlockedURL).filter(BlockedURL.url == url).first() 
     return {
         "url": url,
         "is_blocked": blocked is not None,
@@ -322,11 +322,11 @@ def check_url_blocked(url: str, db: Session = Depends(get_db)):
 def get_stats(db: Session = Depends(get_db)):
     total_urls = db.query(URL).count()
     total_filter_rules = db.query(FilterRule).count()
-    active_filter_rules = db.query(FilterRule).filter(FilterRule.is_active == True).count() #pyright: ignore[reportOptionalCall]
+    active_filter_rules = db.query(FilterRule).filter(FilterRule.is_active == True).count() 
     total_blocked_urls = db.query(BlockedURL).count()
     
-    url_sources = db.query(URL.source, func.count(URL.id)).group_by(URL.source).all() #pyright: ignore[reportOptionalCall]
-    blocked_reasons = db.query(BlockedURL.block_reason, func.count(BlockedURL.id)).group_by(BlockedURL.block_reason).all() #pyright: ignore[reportOptionalCall]
+    url_sources = db.query(URL.source, func.count(URL.id)).group_by(URL.source).all() 
+    blocked_reasons = db.query(BlockedURL.block_reason, func.count(BlockedURL.id)).group_by(BlockedURL.block_reason).all() 
     
     return {
         "total_urls": total_urls,

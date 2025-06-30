@@ -17,7 +17,7 @@ database_url = os.getenv('DATABASE_URL')
 if database_url:
     config.set_main_option('sqlalchemy.url', database_url)
 
-target_metadata = Base.metadata # type: ignore
+target_metadata = Base.metadata 
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
@@ -45,7 +45,7 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-    with connectable.connect() as connection: # type: ignore
+    with connectable.connect() as connection: 
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

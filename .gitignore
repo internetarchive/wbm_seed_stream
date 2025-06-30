@@ -1,21 +1,13 @@
-# Python
 __pycache__
-
-# Security
 .env
-
-# MacOS
 .DS_Store
-
-# Zed
 .ropeproject
-
-# Project-Specific
 logs
 *.json
+*.jsonl
 *.txt
-
-# Large Files
 *.png
 data
 *.pkl
+*.csv
+*.tsv

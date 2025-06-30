@@ -26,8 +26,8 @@ def get_stats(db: Session = Depends(get_db)):
     total = db.query(func.count(URL.id)).scalar() or 0
     print("func =", func)
     print("type(func) =", type(func))
-    by_source_result = db.query(URL.source, func.count(URL.id)).group_by(URL.source).all() or [] # type: ignore
-    by_status_result = db.query(URL.status, func.count(URL.id)).group_by(URL.status).all() or [] # type: ignore
+    by_source_result = db.query(URL.source, func.count(URL.id)).group_by(URL.source).all() or [] 
+    by_status_result = db.query(URL.status, func.count(URL.id)).group_by(URL.status).all() or [] 
 
     by_source = dict(by_source_result)
     by_status = dict(by_status_result)
