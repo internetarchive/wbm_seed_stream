@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from imblearn.over_sampling import SMOTE
-
 from sklearn.ensemble import (GradientBoostingClassifier,
                               RandomForestClassifier, VotingClassifier)
 from sklearn.feature_selection import SelectKBest, f_classif
@@ -25,11 +24,6 @@ from sklearn.tree import DecisionTreeClassifier
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-
-# A good number of the 49 textual / domain features are primarily text & keyword based
-# so neither of these decision tree models necessarily perform super great 
-# unfortunately,
 
 
 class AdvancedWebSpamDatasetLoader:
@@ -367,6 +361,7 @@ class SuperiorFeatureExtractor:
         return common_count / len(bigrams)
 
     def _safe_divide(self, numerator: float, denominator: float) -> float:
+        """Safe division to avoid division by zero"""
         return numerator / denominator if denominator != 0 else 0.0
 
     def _get_empty_features(self) -> Dict:

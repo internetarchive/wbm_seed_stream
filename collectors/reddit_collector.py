@@ -5,7 +5,7 @@ import hashlib
 from urllib.parse import urlparse
 
 INGEST_API_URL = "http://localhost:8000/api/ingest"
-SLEEP_INTERVAL = 1800  # 30 minutes
+SLEEP_INTERVAL = 1800  
 CACHE_FILE = "reddit_cache.txt"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
@@ -66,7 +66,7 @@ def fetch_subreddit_posts(subreddit, limit=25, sort='hot'):
         
         if 'data' in data and 'children' in data['data']:
             for child in data['data']['children']:
-                if child['kind'] == 't3':  # indicates a post or submission
+                if child['kind'] == 't3':  
                     posts.append(child['data'])
         
         return posts
@@ -155,7 +155,7 @@ def process_subreddit(subreddit, seen_items):
                     "source": "reddit"
                 }
                 
-                # alternatively consider upvoting / comments based priority?
+                
                 ingest_url(post_url, meta, priority=1, source="reddit")
                 new_items_count += 1
             
@@ -178,7 +178,7 @@ def run_collector():
         for subreddit in SUBREDDITS:
             try:
                 process_subreddit(subreddit, seen_items)
-                time.sleep(1) # politness delay
+                time.sleep(1) 
             except Exception as e:
                 logging.error(f"Error processing subreddit r/{subreddit}: {e}")
         

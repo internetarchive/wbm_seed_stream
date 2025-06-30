@@ -45,7 +45,7 @@ CRAWL_CONFIG = {
         "delay": 2.0,
         "priority": 2
     },
-    # Product Hunt does not work with the current version of these rules:
+    
     "producthunt.com": {
         "start_urls": ["https://www.producthunt.com/"],
         "follow_patterns": [r"/posts/[^/]+"],
@@ -145,7 +145,7 @@ def extract_links(html_content, base_url):
                 href_attr = link.get('href')
                 if href_attr:
                     href = str(href_attr).strip() if isinstance(href_attr, list) else href_attr.strip()
-                    if href and not href.startswith('#'):
+                    if href and not href.startswith('
                         absolute_url = urljoin(base_url, href)
                         title_attr = link.get('title')
                         title = str(title_attr) if title_attr else ''

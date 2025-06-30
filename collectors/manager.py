@@ -217,7 +217,7 @@ class CollectorManager:
         collector_name = config['name']
         
         try:
-            for line in iter(process.stdout.readline, ''): # pyright: ignore[reportOptionalMemberAccess]
+            for line in iter(process.stdout.readline, ''): 
                 if not line.strip():
                     continue
                     

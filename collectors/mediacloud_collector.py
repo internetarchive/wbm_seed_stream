@@ -42,7 +42,7 @@ def get_date_range(days_back):
     return dates
 
 def fetch_mediacloud_rss(date):
-    url = MEDIACLOUD_BASE_URL.format(date=date) #pyright: ignore[reportOptionalMemberAccess]
+    url = MEDIACLOUD_BASE_URL.format(date=date) 
     
     try:
         logging.info(f"Fetching MediaCloud RSS for {date}")

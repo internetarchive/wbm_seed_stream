@@ -1,10 +1,10 @@
-#!/bin/bash
+
 
 API_ONLY=false
 COLLECTORS_ONLY=false
 COLLECTORS_ARGS=""
 
-while [[ $# -gt 0 ]]; do
+while [[ $
     case $1 in
         --api-only)
             API_ONLY=true
@@ -16,7 +16,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --collectors)
             shift
-            while [[ $# -gt 0 && ! $1 =~ ^-- ]]; do
+            while [[ $
                 COLLECTORS_ARGS="$COLLECTORS_ARGS $1"
                 shift
             done

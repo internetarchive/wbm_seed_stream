@@ -55,11 +55,11 @@ def parse_rss_feed(feed_url):
         
 
         if root.tag == 'rss':
-            # RSS 2.0
+            
             for item in root.findall('.//item'):
                 items.append(parse_rss_item(item))
         elif root.tag.endswith('RDF') or 'rdf' in root.tag.lower():
-            # RDF/RSS 1.0
+            
             for item in root.findall('.//{http://purl.org/rss/1.0/}item'):
                 items.append(parse_rdf_item(item))
         
@@ -85,7 +85,7 @@ def parse_rdf_item(item):
         'link': get_text(item.find('.//{http://purl.org/rss/1.0/}link')),
         'description': get_text(item.find('.//{http://purl.org/rss/1.0/}description')),
         'pubDate': get_text(item.find('.//{http://purl.org/dc/elements/1.1/}date')),
-        'guid': item.get('{http://www.w3.org/1999/02/22-rdf-syntax-ns#}about', ''),
+        'guid': item.get('{http://www.w3.org/1999/02/22-rdf-syntax-ns
         'author': get_text(item.find('.//{http://purl.org/dc/elements/1.1/}creator')),
         'category': get_text(item.find('.//{http://purl.org/dc/elements/1.1/}subject'))
     }
