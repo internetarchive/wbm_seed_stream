@@ -151,7 +151,6 @@ class OptimizedURLPrioritizer:
         if adult_reasons:
             all_reasons['adult'] = adult_reasons
 
-        # Spam scoring
         spam_score, spam_reasons = 0, []
         tld = self.get_tld(domain)
         if tld in self.suspicious_tlds:
@@ -214,23 +213,20 @@ def process_batch_worker_optimized(rows_list):
     prioritizer = OptimizedURLPrioritizer()
     results = []
 
-    # Convert to list if it's an iterator
     if hasattr(rows_list, '__iter__') and not isinstance(rows_list, (list, tuple)):
         rows_list = list(rows_list)
 
-    # Count domain frequencies in this batch
     domain_counter = Counter()
     for row in rows_list:
-        # Handle different row types - fix the access pattern
         if hasattr(row, 'url') and row.url:
             url = row.url
         elif isinstance(row, dict):
             url = row.get('url', '')
         elif isinstance(row, (list, tuple)) and len(row) > 1:
-            url = row[1]  # URL is second column in TSV
+            url = row[1]
         else:
             continue
-            
+
         if url:
             domain = prioritizer.extract_domain(url)
             if domain:
@@ -265,16 +261,14 @@ def process_batch_worker_optimized(rows_list):
             # Calculate domain frequency and percentage
             current_domain_frequency = domain_counter[domain]
             domain_frequency_pct = (current_domain_frequency / len(rows_list)) if rows_list else 0.0
-            
-            # Check for duplicate URL fingerprints within the batch to avoid reprocessing
+
             fingerprint = prioritizer.get_url_fingerprint(url)
             if fingerprint in url_fingerprints:
-                # print(f"DEBUG: Skipping duplicate URL fingerprint: {url}")
                 continue
             url_fingerprints.add(fingerprint)
 
             priority_score, reasons = prioritizer.calculate_priority_score_fast(url, timestamp, domain)
-            is_active = priority_score < 10.0 
+            is_active = priority_score < 10.0
             received_at_dt = datetime.now(timezone.utc)
 
             results.append(URLAnalysisResult(
@@ -294,4 +288,4 @@ def process_batch_worker_optimized(rows_list):
             traceback.print_exc()
             continue
 
-    return results 
+    return results
