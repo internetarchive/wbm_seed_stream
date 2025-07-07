@@ -1,34 +1,36 @@
+import sys
 import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '''..''')))
+
 import shutil
 import subprocess
-import sys
 import time
 import zipfile
 import logging
+from datetime import datetime
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from utils.parquet_to_csv import convert_parquet_to_csv
+from utils.crawl_summary import generate_crawl_summary
 
 class FileWatcher:
-    def __init__(self, watch_directory, staging_directory, processed_directory):
+    def __init__(self, watch_directory, output_base_directory):
         self.watch_directory = watch_directory
-        self.staging_directory = staging_directory
-        self.processed_directory = processed_directory
+        self.output_base_directory = output_base_directory
         self.spark_zip_path = "spark_modules.zip"
         
-        # Configure logging to suppress Spark INFO logs
         self._configure_logging()
-
-        if self._should_recreate_zip():
+        
+        should_recreate = self._should_recreate_zip()
+        if should_recreate:
             self._create_spark_zip()
 
     def _configure_logging(self):
-        """Configure logging to suppress Spark INFO logs while keeping our custom logs"""
-        # Set up root logger to WARNING level to suppress most Spark logs
         logging.getLogger().setLevel(logging.WARNING)
         
-        # Suppress specific Spark loggers
         spark_loggers = [
             'org.apache.spark',
             'org.sparkproject',
@@ -59,18 +61,72 @@ class FileWatcher:
         if not os.path.exists(self.spark_zip_path):
             return True
 
-        if not os.path.exists("spark") or not os.path.isdir("spark"):
-            return False
-
         zip_mtime = os.path.getmtime(self.spark_zip_path)
-        for root, dirs, files in os.walk("spark"):
-            for file in files:
-                if file.endswith('.py'):
-                    file_path = os.path.join(root, file)
-                    if os.path.getmtime(file_path) > zip_mtime:
-                        print(f"Spark module {file_path} has been modified, recreating zip...")
+
+        if os.path.exists("spark") and os.path.isdir("spark"):
+            for root, dirs, files in os.walk("spark"):
+                for file in files:
+                    if file.endswith('.py'):
+                        file_path = os.path.join(root, file)
+                        if os.path.getmtime(file_path) > zip_mtime:
+                            print(f"Spark module {file_path} has been modified, recreating zip...")
+                            return True
+
+        project_modules = ["config", "models.py", "schemas.py", "services", "utils"]
+        for module in project_modules:
+            if os.path.exists(module):
+                if os.path.isdir(module):
+                    for root, dirs, files in os.walk(module):
+                        for file in files:
+                            if file.endswith('.py'):
+                                file_path = os.path.join(root, file)
+                                if os.path.getmtime(file_path) > zip_mtime:
+                                    print(f"Project module {file_path} has been modified, recreating zip...")
+                                    return True
+                elif module.endswith('.py'):
+                    if os.path.getmtime(module) > zip_mtime:
+                        print(f"Project file {module} has been modified, recreating zip...")
                         return True
+
         return False
+
+    def _get_spark_memory_config(self):
+        return [
+            "spark-submit",
+            "--master", "local[*]",
+            "--driver-memory", "32g",
+            "--executor-memory", "16g",
+            "--executor-cores", "8",
+            "--num-executors", "2",
+            "--conf", "spark.serializer=org.apache.spark.serializer.KryoSerializer",
+            "--conf", "spark.sql.adaptive.enabled=true",
+            "--conf", "spark.sql.adaptive.coalescePartitions.enabled=true",
+            "--conf", "spark.ui.showConsoleProgress=false",
+            "--conf", "spark.sql.execution.arrow.pyspark.enabled=true",
+            "--conf", "spark.sql.adaptive.skewJoin.enabled=true",
+            "--conf", "spark.sql.adaptive.localShuffleReader.enabled=true",
+            "--conf", "spark.log.level=WARN",
+            "--conf", "spark.sql.adaptive.advisoryPartitionSizeInBytes=128MB",
+            "--conf", "spark.sql.adaptive.coalescePartitions.minPartitionSize=20MB",
+            "--conf", "spark.sql.adaptive.coalescePartitions.parallelismFirst=false",
+            "--conf", "spark.sql.columnar.cache.enabled=false",
+            "--conf", "spark.sql.inMemoryColumnarStorage.compressed=true",
+            "--conf", "spark.sql.inMemoryColumnarStorage.batchSize=1000",
+        ]
+    
+    def _generate_job_summary(self, job_output_base_dir):
+        try:
+            parquet_path = os.path.join(job_output_base_dir, "output", "parquet")
+            if os.path.exists(parquet_path):
+                print(f"DEBUG: Generating summary for {parquet_path}")
+                summary_path = generate_crawl_summary(parquet_path, job_output_base_dir)
+                print(f"DEBUG: Summary generated: {summary_path}")
+            else:
+                print(f"DEBUG: No parquet data found at {parquet_path}")
+        except Exception as e:
+            print(f"ERROR: Failed to generate summary: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _create_spark_zip(self):
         with zipfile.ZipFile(self.spark_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
@@ -83,8 +139,7 @@ class FileWatcher:
                             arcname = os.path.relpath(file_path, '.')
                             zipf.write(file_path, arcname)
 
-
-            project_modules = ["config", "models.py", "schemas.py"]
+            project_modules = ["config", "models.py", "schemas.py", "services", "utils"]
             for module in project_modules:
                 if os.path.exists(module):
                     if os.path.isdir(module):
@@ -96,38 +151,16 @@ class FileWatcher:
                                     zipf.write(file_path, arcname)
                     elif module.endswith('.py'):
                         zipf.write(module, module)
-
-        print(f"Created {self.spark_zip_path} for Spark job distribution")
-
-    def _move_file_to_staging(self, src_path):
-        filename = os.path.basename(src_path)
-        dest_path = os.path.join(self.staging_directory, filename)
-        shutil.move(src_path, dest_path)
-        print(f"Moved {src_path} to {dest_path}")
-        return dest_path
-
-    def _archive_processed_file(self, src_path):
-        filename = os.path.basename(src_path)
-        dest_path = os.path.join(self.processed_directory, filename)
-        shutil.move(src_path, dest_path)
-        print(f"Archived {src_path} to {dest_path}")
+                else:
+                    print(f"WARNING: Module path does not exist: {module}. Skipping.")
 
     def _setup_spark_environment(self):
-
         python_executable = sys.executable
-
-
         os.environ["PYSPARK_PYTHON"] = python_executable
         os.environ["PYSPARK_DRIVER_PYTHON"] = python_executable
-
-
         os.environ["MKL_SERVICE_FORCE_INTEL"] = "1"
-
-
         os.environ["HADOOP_HOME"] = "/tmp"
         os.environ["HADOOP_CONF_DIR"] = "/tmp"
-
-
         os.environ["SPARK_LOCAL_IP"] = "127.0.0.1"
 
     def _get_java_opens_options(self):
@@ -144,13 +177,33 @@ class FileWatcher:
         ]
         return java_opens
 
-    def _trigger_spark_job(self, input_file_path):
+    def _trigger_spark_job(self, original_input_file_path):
         print("=" * 80)
-        print(f"DEBUG: Starting Spark job trigger for: {input_file_path}")
+        print(f"DEBUG: Starting Spark job trigger for: {original_input_file_path}")
         print(f"DEBUG: Current working directory: {os.getcwd()}")
         print("=" * 80)
         
-        # Check if spark job file exists
+        timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        job_output_base_dir = os.path.join(self.output_base_directory, timestamp_str)
+        os.makedirs(job_output_base_dir, exist_ok=True)
+
+        job_input_dir = os.path.join(job_output_base_dir, "input")
+        job_output_root_dir = os.path.join(job_output_base_dir, "output")
+        job_output_parquet_dir = os.path.join(job_output_root_dir, "parquet")
+        job_output_csv_dir = os.path.join(job_output_root_dir, "csv")
+
+        os.makedirs(job_input_dir, exist_ok=True)
+        os.makedirs(job_output_parquet_dir, exist_ok=True)
+        os.makedirs(job_output_csv_dir, exist_ok=True)
+
+        input_filename = os.path.basename(original_input_file_path)
+        current_input_file_path = os.path.join(job_input_dir, input_filename)
+        shutil.move(original_input_file_path, current_input_file_path)
+        print(f"DEBUG: Moved input file {original_input_file_path} to {current_input_file_path}")
+
+        spark_output_path = job_output_parquet_dir
+        print(f"DEBUG: Spark output will be written to: {spark_output_path}")
+        
         spark_job_path = "spark/jobs/url_processor.py"
         if not os.path.exists(spark_job_path):
             print(f"ERROR: Spark job file not found at {spark_job_path}")
@@ -162,19 +215,12 @@ class FileWatcher:
         else:
             print(f"DEBUG: Found spark job file at {spark_job_path}")
         
-        # Check if input file exists
-        if not os.path.exists(input_file_path):
-            print(f"ERROR: Input file not found at {input_file_path}")
+        if not os.path.exists(current_input_file_path):
+            print(f"ERROR: Input file not found at {current_input_file_path}")
             return
         else:
-            print(f"DEBUG: Input file exists: {input_file_path}")
+            print(f"DEBUG: Input file exists: {current_input_file_path}")
         
-        output_file_name = os.path.splitext(os.path.basename(input_file_path))[0] + ".parquet"
-        output_directory = os.path.join(self.processed_directory, "spark_output")
-        os.makedirs(output_directory, exist_ok=True)
-        output_file_path = os.path.join(output_directory, output_file_name)
-        print(f"DEBUG: Output will be written to: {output_file_path}")
-
         self._setup_spark_environment()
 
         java_options = self._get_java_opens_options()
@@ -184,25 +230,10 @@ class FileWatcher:
         else:
             print(f"DEBUG: JDBC jar found at {jdbc_jar_path}")
 
-        spark_submit_command = [
-            "spark-submit",
-            "--master", "local[*]",
-            "--jars", jdbc_jar_path,
-            "--conf", "spark.serializer=org.apache.spark.serializer.KryoSerializer",
-            "--conf", "spark.sql.adaptive.enabled=true",
-            "--conf", "spark.sql.adaptive.coalescePartitions.enabled=true",
-            "--conf", "spark.ui.showConsoleProgress=false",
-            "--conf", "spark.sql.execution.arrow.pyspark.enabled=true",
-            "--conf", "spark.sql.adaptive.skewJoin.enabled=true",
-            "--conf", "spark.sql.adaptive.localShuffleReader.enabled=true",
-            # Add logging configuration to suppress INFO logs
-            "--conf", "spark.log.level=WARN",
-            # Added for performance tuning
-            "--driver-memory", "32g",
-            "--executor-memory", "16g",
-            "--executor-cores", "8",
-            "--num-executors", "2"
-        ]
+        spark_submit_command = self._get_spark_memory_config()
+        
+        if os.path.exists(jdbc_jar_path):
+            spark_submit_command.extend(["--jars", jdbc_jar_path])
 
         driver_java_opts = " ".join(java_options)
         executor_java_opts = " ".join(java_options)
@@ -212,8 +243,8 @@ class FileWatcher:
             "--conf", f"spark.executor.extraJavaOptions={executor_java_opts}",
             "--py-files", self.spark_zip_path,
             "spark/jobs/url_processor.py",
-            input_file_path,
-            output_file_path
+            current_input_file_path,
+            spark_output_path
         ])
 
         print("DEBUG: Triggering Spark job with command:")
@@ -224,12 +255,9 @@ class FileWatcher:
             env = os.environ.copy()
             env["SPARK_CONF_DIR"] = ""
             env["PYTHONHASHSEED"] = "0"
-            
-            # Add logging configuration to environment
             env["SPARK_LOG_LEVEL"] = "WARN"
 
             print("DEBUG: About to execute spark-submit...")
-            # Remove capture_output=True to see real-time logs
             result = subprocess.run(
                 spark_submit_command,
                 check=True,
@@ -239,19 +267,22 @@ class FileWatcher:
             )
             print("=" * 80)
             print(f"DEBUG: Spark job process completed with return code: {result.returncode}")
-            print(f"DEBUG: Spark job completed successfully for {input_file_path}")
+            print(f"DEBUG: Spark job completed successfully for {current_input_file_path}")
             print("=" * 80)
-
-            self._archive_processed_file(input_file_path)
+            
+            csv_output_file_path = os.path.join(job_output_csv_dir, "data.csv")
+            print(f"DEBUG: Converting Parquet to CSV. Input: {spark_output_path}, Output: {csv_output_file_path}")
+            convert_parquet_to_csv(spark_output_path, csv_output_file_path)
+            print(f"DEBUG: Parquet to CSV conversion completed for {spark_output_path}")
 
         except subprocess.TimeoutExpired:
             print("=" * 80)
-            print(f"ERROR: Spark job timed out for {input_file_path}")
+            print(f"ERROR: Spark job timed out for {current_input_file_path}")
             print("=" * 80)
 
         except subprocess.CalledProcessError as e:
             print("=" * 80)
-            print(f"ERROR: Spark job failed for {input_file_path}")
+            print(f"ERROR: Spark job failed for {current_input_file_path}")
             print(f"Return code: {e.returncode}")
             if hasattr(e, 'stdout') and e.stdout:
                 print("STDOUT:", e.stdout)
@@ -270,18 +301,18 @@ class FileWatcher:
             import traceback
             traceback.print_exc()
             print("=" * 80)
+        
+        self._generate_job_summary(job_output_base_dir)
 
     def start(self):
-
         print(f"Checking for existing files in {self.watch_directory}")
         for filename in os.listdir(self.watch_directory):
             file_path = os.path.join(self.watch_directory, filename)
             if os.path.isfile(file_path) and filename.endswith('.tsv'):
                 print(f"Processing existing file: {file_path}")
-                staged_file_path = self._move_file_to_staging(file_path)
-                self._trigger_spark_job(staged_file_path)
+                self._trigger_spark_job(file_path)
 
-        event_handler = FileEventHandler(self._move_file_to_staging, self._trigger_spark_job)
+        event_handler = FileEventHandler(self._trigger_spark_job)
         observer = Observer()
         observer.schedule(event_handler, self.watch_directory, recursive=False)
         observer.start()
@@ -294,26 +325,21 @@ class FileWatcher:
         observer.join()
 
 class FileEventHandler(FileSystemEventHandler):
-    def __init__(self, move_to_staging_callback, trigger_spark_job_callback):
-        self.move_to_staging_callback = move_to_staging_callback
+    def __init__(self, trigger_spark_job_callback):
         self.trigger_spark_job_callback = trigger_spark_job_callback
 
     def on_created(self, event):
         if not event.is_directory and event.src_path.endswith('.tsv'):
             print(f"New TSV file detected: {event.src_path}")
-
             time.sleep(2)
-            staged_file_path = self.move_to_staging_callback(event.src_path)
-            self.trigger_spark_job_callback(staged_file_path)
+            self.trigger_spark_job_callback(event.src_path)
 
 if __name__ == "__main__":
-    WATCH_DIRECTORY = "indexnow/data"
-    STAGING_DIRECTORY = "data/staging"
-    PROCESSED_DIRECTORY = "data/processed"
+    WATCH_DIRECTORY = "data/input"
+    OUTPUT_BASE_DIRECTORY = "data/output"
 
     os.makedirs(WATCH_DIRECTORY, exist_ok=True)
-    os.makedirs(STAGING_DIRECTORY, exist_ok=True)
-    os.makedirs(PROCESSED_DIRECTORY, exist_ok=True)
+    os.makedirs(OUTPUT_BASE_DIRECTORY, exist_ok=True)
 
-    watcher = FileWatcher(WATCH_DIRECTORY, STAGING_DIRECTORY, PROCESSED_DIRECTORY)
+    watcher = FileWatcher(WATCH_DIRECTORY, OUTPUT_BASE_DIRECTORY)
     watcher.start()

@@ -10,11 +10,11 @@ from pyspark.sql.types import (BooleanType, FloatType, IntegerType, StringType,
 
 from config.settings import settings
 from spark.config.spark_config import get_spark_session
-from spark.utils.url_analysis import process_batch_worker_optimized
+from services.url_scoring_service import process_batch_worker_optimized
 
 PROCESSED_URL_SCHEMA = StructType([
     StructField("url", StringType(), True),
-    StructField("timestamp", StringType(), True),
+    StructField("timestamp", TimestampType(), True),
     StructField("domain", StringType(), True),
     StructField("priority_score", FloatType(), True),
     StructField("reasons", StringType(), True),
@@ -123,6 +123,39 @@ def process_pandas_partition(iterator):
                 except Exception as e2:
                     print(f"DEBUG: ISO8601 parsing also failed, using infer_datetime_format: {e2}")
                     output_pandas_df["received_at"] = pd.to_datetime(output_pandas_df["received_at"], infer_datetime_format=True, errors='coerce')
+        
+        # Handle timestamp conversion for 'timestamp' column
+        if "timestamp" in output_pandas_df.columns and not pd.api.types.is_datetime64_any_dtype(output_pandas_df["timestamp"]):
+            # Convert to numeric, coercing errors, before attempting datetime conversion with unit
+            output_pandas_df["timestamp"] = pd.to_numeric(output_pandas_df["timestamp"], errors='coerce')
+
+            # Drop rows where timestamp became NaN after numeric conversion
+            output_pandas_df.dropna(subset=['timestamp'], inplace=True)
+            
+            # If after dropping NaNs, the column is empty, set it to None and continue
+            if output_pandas_df["timestamp"].empty:
+                output_pandas_df["timestamp"] = None
+            else:
+                try:
+                    # Attempt to convert as Unix timestamp (milliseconds)
+                    output_pandas_df["timestamp"] = pd.to_datetime(output_pandas_df["timestamp"], unit='ms', errors='coerce')
+                except Exception as e_ms:
+                    print(f"DEBUG: Timestamp conversion failed with unit='ms': {e_ms}. Trying 'us'.")
+                    try:
+                        # Attempt to convert as Unix timestamp (microseconds)
+                        output_pandas_df["timestamp"] = pd.to_datetime(output_pandas_df["timestamp"], unit='us', errors='coerce')
+                    except Exception as e_us:
+                        print(f"DEBUG: Timestamp conversion failed with unit='us': {e_us}. Trying 'ns'.")
+                        try:
+                            # Attempt to convert as Unix timestamp (nanoseconds)
+                            output_pandas_df["timestamp"] = pd.to_datetime(output_pandas_df["timestamp"], unit='ns', errors='coerce')
+                        except Exception as e_ns:
+                            print(f"DEBUG: Timestamp conversion failed with unit='ns': {e_ns}. Trying infer_datetime_format.")
+                            try:
+                                output_pandas_df["timestamp"] = pd.to_datetime(output_pandas_df["timestamp"], infer_datetime_format=True, errors='coerce')
+                            except Exception as e_infer:
+                                print(f"DEBUG: Timestamp conversion for 'timestamp' column failed with infer_datetime_format: {e_infer}. Setting to None.")
+                                output_pandas_df["timestamp"] = None # Set to None if all conversions fail
 
         yield output_pandas_df
         
@@ -158,9 +191,6 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
         if total_rows == 0:
             print("DEBUG: No rows after cleaning, exiting")
             return
-
-        # Repartition for better performance if needed
-        # Set a fixed number of partitions to leverage allocated cores
         num_partitions = 32 
         df_cleaned = df_cleaned.repartition(num_partitions)
         print(f"DEBUG: Repartitioned to {num_partitions} partitions")
@@ -168,10 +198,8 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
         print("DEBUG: Starting mapInPandas processing")
         processed_df = df_cleaned.mapInPandas(process_pandas_partition, schema=PROCESSED_URL_SCHEMA)
 
-        # For counting, we can use a different approach to avoid caching
         print("DEBUG: Processing and writing data without caching")
 
-        # Show sample processed data first (this will trigger some computation)
         print("DEBUG: Sample processed data:")
         processed_df.show(5, truncate=False)
 
@@ -189,10 +217,18 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
 
         try:
             print("DEBUG: Writing to database")
-            processed_df.write \
+            # Select only columns relevant to the AnalyzedURL table
+            # 'processed' and 'created_at' have default values in the DB, so no need to explicitly insert
+            df_to_write = processed_df.select(
+                col("url"),
+                col("timestamp"),
+                col("priority_score"),
+                col("reasons")
+            )
+            df_to_write.write \
                 .format("jdbc") \
                 .option("url", settings.JDBC_URL) \
-                .option("dbtable", settings.URLS_TABLE) \
+                .option("dbtable", "analyzed_urls") \
                 .option("user", settings.POSTGRES_USER) \
                 .option("password", settings.POSTGRES_PASSWORD) \
                 .option("driver", "org.postgresql.Driver") \
