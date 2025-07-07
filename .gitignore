@@ -8,6 +8,8 @@ logs
 *.txt
 *.png
 data
+indexnow/data
+.jsonl
 *.pkl
 *.csv
 *.tsv
