@@ -2,14 +2,25 @@ import os
 import sys
 import time
 from datetime import datetime
-from collections import Counter
-import pandas as pd
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, count, desc, asc
-from spark.config.spark_config import get_spark_session
+from pyspark.sql.types import (BooleanType, FloatType, IntegerType, StringType,
+                               StructField, StructType, TimestampType)
+
+PROCESSED_URL_SCHEMA = StructType([
+    StructField("url", StringType(), True),
+    StructField("timestamp", TimestampType(), True),
+    StructField("domain", StringType(), True),
+    StructField("classification_score", FloatType(), True),
+    StructField("confidence", FloatType(), True),
+    StructField("reasons", StringType(), True),
+    StructField("domain_frequency", IntegerType(), True),
+    StructField("domain_frequency_pct", FloatType(), True),
+    StructField("is_spam", BooleanType(), True),
+    StructField("received_at", TimestampType(), True),
+])
 
 def generate_crawl_summary(parquet_path, output_dir):
-    print(f"DEBUG: Starting summary generation for {parquet_path}")
     start_time = time.time()
     
     spark = SparkSession.builder \
@@ -33,32 +44,45 @@ def generate_crawl_summary(parquet_path, output_dir):
         .getOrCreate()
     
     try:
-        df = spark.read.parquet(parquet_path)
+        df = spark.read.schema(PROCESSED_URL_SCHEMA).parquet(parquet_path)
         
         total_urls = df.count()
         print(f"DEBUG: Loaded {total_urls} total records")
         
+        # Handle case where no data exists
+        if total_urls == 0:
+            print("DEBUG: No data found, creating empty summary")
+            _create_empty_summary(output_dir, parquet_path)
+            return os.path.join(output_dir, "crawl_summary.txt")
+        
         unique_urls = df.select("url").distinct().count()
         
+        # Use the correct column names from your schema
         domain_freq = df.groupBy("domain").agg(count("*").alias("frequency")) \
                        .orderBy(desc("frequency")) \
                        .limit(10) \
                        .collect()
         
-        best_urls = df.filter(col("priority_score").isNotNull()) \
-                     .orderBy(desc("priority_score")) \
-                     .select("url", "priority_score", "domain") \
+        # Use classification_score instead of priority_score
+        best_urls = df.filter(col("classification_score").isNotNull()) \
+                     .orderBy(desc("classification_score")) \
+                     .select("url", "classification_score", "domain", "confidence") \
                      .limit(10) \
                      .collect()
         
-        worst_urls = df.filter(col("priority_score").isNotNull()) \
-                      .orderBy(asc("priority_score")) \
-                      .select("url", "priority_score", "domain") \
+        worst_urls = df.filter(col("classification_score").isNotNull()) \
+                      .orderBy(asc("classification_score")) \
+                      .select("url", "classification_score", "domain", "confidence") \
                       .limit(10) \
                       .collect()
         
-        avg_priority = df.select("priority_score").filter(col("priority_score").isNotNull()).agg({"priority_score": "avg"}).collect()[0][0]
-        active_count = df.filter(col("is_active") == True).count()
+        # Calculate averages
+        avg_classification = df.select("classification_score").filter(col("classification_score").isNotNull()).agg({"classification_score": "avg"}).collect()[0][0]
+        avg_confidence = df.select("confidence").filter(col("confidence").isNotNull()).agg({"confidence": "avg"}).collect()[0][0]
+        
+        # Use is_spam instead of is_active
+        spam_count = df.filter(col("is_spam") == True).count()
+        non_spam_count = df.filter(col("is_spam") == False).count()
         
         processing_time = time.time() - start_time
         
@@ -67,7 +91,7 @@ def generate_crawl_summary(parquet_path, output_dir):
         
         with open(summary_path, 'w') as f:
             f.write("=" * 80 + "\n")
-            f.write("CRAWL JOB SUMMARY REPORT\n")
+            f.write("URL PROCESSING SUMMARY REPORT\n")
             f.write("=" * 80 + "\n")
             f.write(f"Generated: {timestamp}\n")
             f.write(f"Data Source: {parquet_path}\n")
@@ -78,8 +102,10 @@ def generate_crawl_summary(parquet_path, output_dir):
             f.write("-" * 40 + "\n")
             f.write(f"Total URLs Processed: {total_urls:,}\n")
             f.write(f"Unique URLs: {unique_urls:,}\n")
-            f.write(f"Active URLs: {active_count:,}\n")
-            f.write(f"Average Priority Score: {avg_priority:.4f}\n")
+            f.write(f"Non-Spam URLs: {non_spam_count:,}\n")
+            f.write(f"Spam URLs: {spam_count:,}\n")
+            f.write(f"Average Classification Score: {avg_classification:.4f}\n")
+            f.write(f"Average Confidence: {avg_confidence:.4f}\n")
             f.write("\n")
             
             f.write("TOP 10 MOST FREQUENT DOMAINS\n")
@@ -91,23 +117,25 @@ def generate_crawl_summary(parquet_path, output_dir):
                 f.write(f"{i:2d}. {domain:<30} {frequency:>8,} ({percentage:>6.2f}%)\n")
             f.write("\n")
             
-            f.write("TOP 10 BEST URLs (HIGHEST PRIORITY SCORE)\n")
+            f.write("TOP 10 BEST URLs (HIGHEST CLASSIFICATION SCORE)\n")
             f.write("-" * 40 + "\n")
             for i, row in enumerate(best_urls, 1):
                 url = row['url']
-                score = row['priority_score']
+                score = row['classification_score']
+                confidence = row['confidence']
                 domain = row['domain'] if row['domain'] else 'Unknown'
-                f.write(f"{i:2d}. Score: {score:.4f} | Domain: {domain}\n")
+                f.write(f"{i:2d}. Score: {score:.4f} | Confidence: {confidence:.4f} | Domain: {domain}\n")
                 f.write(f"    URL: {url}\n")
                 f.write("\n")
             
-            f.write("BOTTOM 10 WORST URLs (LOWEST PRIORITY SCORE)\n")
+            f.write("BOTTOM 10 WORST URLs (LOWEST CLASSIFICATION SCORE)\n")
             f.write("-" * 40 + "\n")
             for i, row in enumerate(worst_urls, 1):
                 url = row['url']
-                score = row['priority_score']
+                score = row['classification_score']
+                confidence = row['confidence']
                 domain = row['domain'] if row['domain'] else 'Unknown'
-                f.write(f"{i:2d}. Score: {score:.4f} | Domain: {domain}\n")
+                f.write(f"{i:2d}. Score: {score:.4f} | Confidence: {confidence:.4f} | Domain: {domain}\n")
                 f.write(f"    URL: {url}\n")
                 f.write("\n")
             
@@ -127,6 +155,27 @@ def generate_crawl_summary(parquet_path, output_dir):
         raise
     finally:
         spark.stop()
+
+def _create_empty_summary(output_dir, parquet_path):
+    """Create a summary file for empty datasets"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    summary_path = os.path.join(output_dir, "crawl_summary.txt")
+    
+    with open(summary_path, 'w') as f:
+        f.write("=" * 80 + "\n")
+        f.write("URL PROCESSING SUMMARY REPORT\n")
+        f.write("=" * 80 + "\n")
+        f.write(f"Generated: {timestamp}\n")
+        f.write(f"Data Source: {parquet_path}\n")
+        f.write("\n")
+        f.write("OVERALL STATISTICS\n")
+        f.write("-" * 40 + "\n")
+        f.write("Total URLs Processed: 0\n")
+        f.write("Status: No data processed or job failed\n")
+        f.write("\n")
+        f.write("=" * 80 + "\n")
+        f.write("END OF REPORT\n")
+        f.write("=" * 80 + "\n")
 
 def generate_summary_for_latest_job(base_output_dir):
     if not os.path.exists(base_output_dir):

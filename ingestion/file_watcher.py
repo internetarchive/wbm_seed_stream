@@ -112,6 +112,9 @@ class FileWatcher:
             "--conf", "spark.sql.columnar.cache.enabled=false",
             "--conf", "spark.sql.inMemoryColumnarStorage.compressed=true",
             "--conf", "spark.sql.inMemoryColumnarStorage.batchSize=1000",
+            "--conf", "spark.sql.adaptive.logLevel=WARN",
+            "--conf", "spark.ui.retainedJobs=50",
+            "--conf", "spark.ui.retainedStages=100",
         ]
     
     def _generate_job_summary(self, job_output_base_dir):
@@ -207,19 +210,14 @@ class FileWatcher:
         spark_job_path = "spark/jobs/url_processor.py"
         if not os.path.exists(spark_job_path):
             print(f"ERROR: Spark job file not found at {spark_job_path}")
-            print(f"Available files in spark/jobs/:")
             if os.path.exists("spark/jobs"):
                 for f in os.listdir("spark/jobs"):
                     print(f"  - {f}")
             return
-        else:
-            print(f"DEBUG: Found spark job file at {spark_job_path}")
         
         if not os.path.exists(current_input_file_path):
             print(f"ERROR: Input file not found at {current_input_file_path}")
             return
-        else:
-            print(f"DEBUG: Input file exists: {current_input_file_path}")
         
         self._setup_spark_environment()
 
@@ -227,8 +225,6 @@ class FileWatcher:
         jdbc_jar_path = "/Users/akshithchowdary/jars/postgresql-42.7.7.jar"
         if not os.path.exists(jdbc_jar_path):
             print(f"WARNING: JDBC jar not found at {jdbc_jar_path}")
-        else:
-            print(f"DEBUG: JDBC jar found at {jdbc_jar_path}")
 
         spark_submit_command = self._get_spark_memory_config()
         
