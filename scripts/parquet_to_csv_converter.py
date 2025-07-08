@@ -3,9 +3,6 @@ import os
 import sys
 
 def convert_parquet_to_csv(input_dir: str, output_csv_path: str):
-    """
-    Reads all Parquet files from an input directory and combines them into a single CSV.
-    """
     if not os.path.isdir(input_dir):
         print(f"Error: Input directory not found: {input_dir}")
         sys.exit(1)
@@ -52,4 +49,4 @@ if __name__ == "__main__":
     input_parquet_directory = sys.argv[1]
     output_csv_file_path = sys.argv[2]
 
-    convert_parquet_to_csv(input_parquet_directory, output_csv_file_path) 
+    convert_parquet_to_csv(input_parquet_directory, output_csv_file_path)

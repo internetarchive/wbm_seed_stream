@@ -11,12 +11,12 @@ PROCESSED_URL_SCHEMA = StructType([
     StructField("url", StringType(), True),
     StructField("timestamp", TimestampType(), True),
     StructField("domain", StringType(), True),
-    StructField("classification_score", FloatType(), True),
-    StructField("confidence", FloatType(), True),
-    StructField("reasons", StringType(), True),
+    StructField("score", FloatType(), True),
+    StructField("confidence", FloatType(), True),  # Keep this for compatibility, but will be None
+    StructField("meta", StringType(), True),
     StructField("domain_frequency", IntegerType(), True),
     StructField("domain_frequency_pct", FloatType(), True),
-    StructField("is_spam", BooleanType(), True),
+    StructField("is_spam", BooleanType(), True),  # Derived from is_active
     StructField("received_at", TimestampType(), True),
 ])
 
@@ -62,25 +62,23 @@ def generate_crawl_summary(parquet_path, output_dir):
                        .orderBy(desc("frequency")) \
                        .limit(10) \
                        .collect()
-        
-        # Use classification_score instead of priority_score
-        best_urls = df.filter(col("classification_score").isNotNull()) \
-                     .orderBy(desc("classification_score")) \
-                     .select("url", "classification_score", "domain", "confidence") \
+
+        best_urls = df.filter(col("score").isNotNull()) \
+                     .orderBy(desc("score")) \
+                     .select("url", "score", "domain", "confidence") \
                      .limit(10) \
                      .collect()
         
-        worst_urls = df.filter(col("classification_score").isNotNull()) \
-                      .orderBy(asc("classification_score")) \
-                      .select("url", "classification_score", "domain", "confidence") \
+        worst_urls = df.filter(col("score").isNotNull()) \
+                      .orderBy(asc("score")) \
+                      .select("url", "score", "domain", "confidence") \
                       .limit(10) \
                       .collect()
         
-        # Calculate averages
-        avg_classification = df.select("classification_score").filter(col("classification_score").isNotNull()).agg({"classification_score": "avg"}).collect()[0][0]
+
+        avg_score = df.select("score").filter(col("score").isNotNull()).agg({"score": "avg"}).collect()[0][0]
         avg_confidence = df.select("confidence").filter(col("confidence").isNotNull()).agg({"confidence": "avg"}).collect()[0][0]
         
-        # Use is_spam instead of is_active
         spam_count = df.filter(col("is_spam") == True).count()
         non_spam_count = df.filter(col("is_spam") == False).count()
         
@@ -104,7 +102,7 @@ def generate_crawl_summary(parquet_path, output_dir):
             f.write(f"Unique URLs: {unique_urls:,}\n")
             f.write(f"Non-Spam URLs: {non_spam_count:,}\n")
             f.write(f"Spam URLs: {spam_count:,}\n")
-            f.write(f"Average Classification Score: {avg_classification:.4f}\n")
+            f.write(f"Average Score: {avg_score:.4f}\n")
             f.write(f"Average Confidence: {avg_confidence:.4f}\n")
             f.write("\n")
             
@@ -117,22 +115,22 @@ def generate_crawl_summary(parquet_path, output_dir):
                 f.write(f"{i:2d}. {domain:<30} {frequency:>8,} ({percentage:>6.2f}%)\n")
             f.write("\n")
             
-            f.write("TOP 10 BEST URLs (HIGHEST CLASSIFICATION SCORE)\n")
+            f.write("TOP 10 BEST URLs (HIGHEST SCORE)\n")
             f.write("-" * 40 + "\n")
             for i, row in enumerate(best_urls, 1):
                 url = row['url']
-                score = row['classification_score']
+                score = row['score']
                 confidence = row['confidence']
                 domain = row['domain'] if row['domain'] else 'Unknown'
                 f.write(f"{i:2d}. Score: {score:.4f} | Confidence: {confidence:.4f} | Domain: {domain}\n")
                 f.write(f"    URL: {url}\n")
                 f.write("\n")
             
-            f.write("BOTTOM 10 WORST URLs (LOWEST CLASSIFICATION SCORE)\n")
+            f.write("BOTTOM 10 WORST URLs (LOWEST SCORE)\n")
             f.write("-" * 40 + "\n")
             for i, row in enumerate(worst_urls, 1):
                 url = row['url']
-                score = row['classification_score']
+                score = row['score']
                 confidence = row['confidence']
                 domain = row['domain'] if row['domain'] else 'Unknown'
                 f.write(f"{i:2d}. Score: {score:.4f} | Confidence: {confidence:.4f} | Domain: {domain}\n")

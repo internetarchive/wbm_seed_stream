@@ -1,8 +1,6 @@
 from sqlalchemy import Column, Integer, String, Text, DateTime, JSON, UniqueConstraint, func, Float, Index
-from sqlalchemy.ext.declarative import declarative_base
+from db import Base
 import uuid
-
-Base = declarative_base()
 
 def generate_batch_id():
     return str(uuid.uuid4())
@@ -13,7 +11,7 @@ class URL(Base):
         UniqueConstraint('url', 'source', name='uix_url_source'),
         Index('idx_urls_processed_at', 'processed_at'),
         Index('idx_urls_score', 'score'),
-        {'postgresql_using': 'btree'},
+        Index('idx_urls_analysis_batch_id', 'analysis_batch_id'),
     )
     
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -27,38 +25,3 @@ class URL(Base):
     analysis_batch_id = Column(String(36), nullable=True, index=True)
     meta = Column(JSON)
     last_modified = Column(DateTime, nullable=True)
-    
-    @classmethod
-    def create_hypertable(cls, connection):
-        """Convert the table to a TimescaleDB hypertable"""
-        connection.execute(
-            f"""
-            SELECT create_hypertable(
-                '{cls.__tablename__}',
-                'processed_at',
-                if_not_exists => TRUE,
-                migrate_data => TRUE
-            );
-            """
-        )
-        
-        # Add compression policy
-        connection.execute(
-            f"""
-            ALTER TABLE {cls.__tablename__} SET (
-                timescaledb.compress,
-                timescaledb.compress_orderby = 'processed_at DESC',
-                timescaledb.compress_segmentby = 'source, status'
-            );
-            """
-        )
-        
-        # Add compression policy (compress data older than 7 days)
-        connection.execute(
-            f"""
-            SELECT add_compression_policy(
-                '{cls.__tablename__}',
-                INTERVAL '7 days'
-            );
-            """
-        )
