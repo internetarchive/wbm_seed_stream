@@ -21,16 +21,16 @@ class FileWatcher:
         self.watch_directory = watch_directory
         self.output_base_directory = output_base_directory
         self.spark_zip_path = "spark_modules.zip"
-        
+
         self._configure_logging()
-        
+
         should_recreate = self._should_recreate_zip()
         if should_recreate:
             self._create_spark_zip()
 
     def _configure_logging(self):
         logging.getLogger().setLevel(logging.WARNING)
-        
+
         spark_loggers = [
             'org.apache.spark',
             'org.sparkproject',
@@ -53,7 +53,7 @@ class FileWatcher:
             'org.apache.spark.sql.SparkSession',
             'org.apache.spark.sql.internal.SharedState'
         ]
-        
+
         for logger_name in spark_loggers:
             logging.getLogger(logger_name).setLevel(logging.WARNING)
 
@@ -106,17 +106,50 @@ class FileWatcher:
             "--conf", "spark.sql.adaptive.skewJoin.enabled=true",
             "--conf", "spark.sql.adaptive.localShuffleReader.enabled=true",
             "--conf", "spark.log.level=WARN",
-            "--conf", "spark.sql.adaptive.advisoryPartitionSizeInBytes=128MB",
-            "--conf", "spark.sql.adaptive.coalescePartitions.minPartitionSize=20MB",
+            "--conf", "spark.sql.adaptive.advisoryPartitionSizeInBytes=256MB",
+            "--conf", "spark.sql.adaptive.coalescePartitions.minPartitionSize=64MB",
             "--conf", "spark.sql.adaptive.coalescePartitions.parallelismFirst=false",
             "--conf", "spark.sql.columnar.cache.enabled=false",
             "--conf", "spark.sql.inMemoryColumnarStorage.compressed=true",
-            "--conf", "spark.sql.inMemoryColumnarStorage.batchSize=1000",
+            "--conf", "spark.sql.inMemoryColumnarStorage.batchSize=10000",
             "--conf", "spark.sql.adaptive.logLevel=WARN",
             "--conf", "spark.ui.retainedJobs=50",
             "--conf", "spark.ui.retainedStages=100",
+            "--conf", "spark.sql.parquet.compression.codec=snappy",
+            "--conf", "spark.sql.parquet.block.size=268435456",
+            "--conf", "spark.sql.parquet.page.size=1048576",
+            "--conf", "spark.sql.parquet.dictionary.enabled=true",
+            "--conf", "spark.sql.parquet.writer.block.size=268435456",
+            "--conf", "spark.sql.parquet.enableVectorizedReader=true",
+            "--conf", "spark.sql.parquet.enableVectorizedWriter=true",
+            "--conf", "spark.sql.parquet.recordLevelFilter.enabled=true",
+            "--conf", "spark.sql.parquet.aggregatePushdown=true",
+            "--conf", "spark.sql.parquet.respectSummaryFiles=false",
+            "--conf", "spark.sql.files.maxPartitionBytes=268435456",
+            "--conf", "spark.sql.files.openCostInBytes=4194304",
+            "--conf", "spark.sql.files.minPartitionNum=1",
+            "--conf", "spark.sql.shuffle.partitions=400",
+            "--conf", "spark.sql.execution.arrow.maxRecordsPerBatch=20000",
+            "--conf", "spark.sql.execution.arrow.pyspark.enabled=true",
+            "--conf", "spark.sql.execution.arrow.pyspark.fallback.enabled=true",
+            "--conf", "spark.sql.adaptive.maxShuffledHashJoinLocalMapThreshold=0",
+            "--conf", "spark.sql.adaptive.localShuffleReader.enabled=true",
+            "--conf", "spark.sql.adaptive.skewJoin.skewedPartitionFactor=5",
+            "--conf", "spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes=256MB",
+            "--conf", "spark.sql.adaptive.nonEmptyPartitionRatioForBroadcastJoin=0.2",
+            "--conf", "spark.sql.adaptive.coalescePartitions.parallelismFirst=false",
+            "--conf", "spark.sql.adaptive.coalescePartitions.initialPartitionNum=400",
+            "--conf", "spark.sql.adaptive.coalescePartitions.minPartitionSize=64MB",
+            "--conf", "spark.serializer.objectStreamReset=100",
+            "--conf", "spark.rdd.compress=true",
+            "--conf", "spark.shuffle.compress=true",
+            "--conf", "spark.shuffle.spill.compress=true",
+            "--conf", "spark.io.compression.codec=snappy",
+            "--conf", "spark.network.timeout=600s",
+            "--conf", "spark.sql.broadcastTimeout=600",
+            "--conf", "spark.sql.adaptive.coalescePartitions.enabled=true",
         ]
-    
+
     def _generate_job_summary(self, job_output_base_dir):
         try:
             parquet_path = os.path.join(job_output_base_dir, "output", "parquet")
@@ -146,7 +179,7 @@ class FileWatcher:
             for module in project_modules:
                 if os.path.exists(module):
                     if os.path.isdir(module):
-                        for root, dirs, files in os.walk(module):
+                        for root, _, files in os.walk(module):
                             for file in files:
                                 if file.endswith('.py'):
                                     file_path = os.path.join(root, file)
@@ -185,7 +218,7 @@ class FileWatcher:
         print(f"DEBUG: Starting Spark job trigger for: {original_input_file_path}")
         print(f"DEBUG: Current working directory: {os.getcwd()}")
         print("=" * 80)
-        
+
         timestamp_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         job_output_base_dir = os.path.join(self.output_base_directory, timestamp_str)
         os.makedirs(job_output_base_dir, exist_ok=True)
@@ -206,7 +239,7 @@ class FileWatcher:
 
         spark_output_path = job_output_parquet_dir
         print(f"DEBUG: Spark output will be written to: {spark_output_path}")
-        
+
         spark_job_path = "spark/jobs/url_processor.py"
         if not os.path.exists(spark_job_path):
             print(f"ERROR: Spark job file not found at {spark_job_path}")
@@ -214,11 +247,11 @@ class FileWatcher:
                 for f in os.listdir("spark/jobs"):
                     print(f"  - {f}")
             return
-        
+
         if not os.path.exists(current_input_file_path):
             print(f"ERROR: Input file not found at {current_input_file_path}")
             return
-        
+
         self._setup_spark_environment()
 
         java_options = self._get_java_opens_options()
@@ -227,7 +260,7 @@ class FileWatcher:
             print(f"WARNING: JDBC jar not found at {jdbc_jar_path}")
 
         spark_submit_command = self._get_spark_memory_config()
-        
+
         if os.path.exists(jdbc_jar_path):
             spark_submit_command.extend(["--jars", jdbc_jar_path])
 
@@ -259,13 +292,13 @@ class FileWatcher:
                 check=True,
                 env=env,
                 text=True,
-                timeout=3600
+                timeout=7200
             )
             print("=" * 80)
             print(f"DEBUG: Spark job process completed with return code: {result.returncode}")
             print(f"DEBUG: Spark job completed successfully for {current_input_file_path}")
             print("=" * 80)
-            
+
             csv_output_file_path = os.path.join(job_output_csv_dir, "data.csv")
             print(f"DEBUG: Converting Parquet to CSV. Input: {spark_output_path}, Output: {csv_output_file_path}")
             convert_parquet_to_csv(spark_output_path, csv_output_file_path)
@@ -297,7 +330,7 @@ class FileWatcher:
             import traceback
             traceback.print_exc()
             print("=" * 80)
-        
+
         self._generate_job_summary(job_output_base_dir)
 
     def start(self):

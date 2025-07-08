@@ -1,5 +1,6 @@
 import hashlib
 import re
+import math
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 from collections import Counter
@@ -10,7 +11,7 @@ class URLAnalysisResult:
     url: str
     timestamp: str
     domain: str
-    priority_score: float
+    score: float 
     reasons: Dict
     domain_frequency: int
     domain_frequency_pct: float
@@ -41,21 +42,18 @@ class OptimizedURLPrioritizer:
             'sex.com', 'porn.com', 'xxx.com', 'adult.com', 'cam4.com', 'chaturbate.com',
             'onlyfans.com', 'pornstar.com', 'nuvid.com', 'motherless.com', 'slutload.com'
         })
-
         self.suspicious_tlds = frozenset({
             '.tk', '.ml', '.ga', '.cf', '.buzz', '.click', '.download', '.loan',
             '.win', '.bid', '.trade', '.date', '.racing', '.review', '.cricket',
             '.xxx', '.top', '.party', '.live', '.work', '.stream', '.faith',
             '.accountant', '.science', '.men', '.gdn', '.kim'
         })
-
         self.quality_domains = frozenset({
             'wikipedia.org', 'github.com', 'stackoverflow.com', 'medium.com',
             'reddit.com', 'youtube.com', 'vimeo.com', 'archive.org', 'arxiv.org',
             'nature.com', 'science.org', 'ieee.org', 'acm.org', 'springer.com',
             'cambridge.org', 'mit.edu', 'stanford.edu', 'harvard.edu', 'ox.ac.uk'
         })
-
         self.news_domains = frozenset({
             'bbc.com', 'cnn.com', 'reuters.com', 'ap.org', 'npr.org', 'pbs.org',
             'theguardian.com', 'nytimes.com', 'washingtonpost.com', 'wsj.com',
@@ -69,14 +67,12 @@ class OptimizedURLPrioritizer:
             'escort', 'hookup', 'dating', 'singles', 'erotic', 'sexy', 'hot',
             'fetish', 'bdsm', 'orgasm', 'masturbat', 'cumshot', 'blowjob'
         ]
-
         spam_keywords = [
             'casino', 'poker', 'betting', 'viagra', 'cialis', 'pharmacy', 'pills',
             'weight-loss', 'make-money', 'work-from-home', 'get-rich', 'free-money',
             'click-here', 'limited-time', 'act-now', 'special-offer', 'lottery',
             'winner', 'congratulations', 'urgent', 'claim', 'prize', 'bonus'
         ]
-
         self.adult_keywords_regex = re.compile('|'.join(re.escape(kw) for kw in adult_keywords))
         self.spam_keywords_regex = re.compile('|'.join(re.escape(kw) for kw in spam_keywords))
 
@@ -100,122 +96,109 @@ class OptimizedURLPrioritizer:
         last_dot = domain.rfind('.')
         return domain[last_dot:] if last_dot >= 0 else None
 
-    def calculate_priority_score_fast(self, url: str, timestamp: str, domain: str = None) -> Tuple[float, Dict]:
+    def calculate_score_fast(self, url: str, timestamp: str, domain: str = None) -> Tuple[float, Dict]:
         if not domain:
             domain = self.extract_domain(url)
         if not domain:
-            return 100.0, {"error": "invalid_url"}
+            return -1.0, {"error": "invalid_url"}
 
-        total_score = 0.0
+        raw_score = 0.0
         all_reasons = {}
         url_lower = url.lower()
 
-        # Quality scoring
         quality_score, quality_reasons = 0, []
         if domain in self.quality_domains:
-            quality_score -= 5
+            quality_score += 5
             quality_reasons.append("high_quality_domain")
         if domain in self.news_domains:
-            quality_score -= 3
+            quality_score += 3
             quality_reasons.append("news_domain")
         if self.compiled_patterns['quality_patterns'].search(url_lower):
-            quality_score -= 2
+            quality_score += 2
             quality_reasons.append("quality_path_pattern")
         if self.compiled_patterns['year_pattern'].search(url):
-            quality_score -= 1
+            quality_score += 1
             quality_reasons.append("dated_content")
-
-        total_score += quality_score
+        raw_score += quality_score
         if quality_reasons:
             all_reasons['quality'] = quality_reasons
 
-        # Adult content scoring
         adult_score, adult_reasons = 0, []
         if domain in self.adult_domains:
-            adult_score += 15
+            adult_score -= 15
             adult_reasons.append("confirmed_adult_domain")
-
         adult_matches = len(self.adult_keywords_regex.findall(url_lower))
         if adult_matches > 0:
-            adult_score += min(adult_matches * 3, 20)
+            adult_score -= min(adult_matches * 3, 20)
             adult_reasons.append(f"adult_keywords({adult_matches})")
-
         if self.compiled_patterns['age_restriction'].search(url_lower):
-            adult_score += 8
+            adult_score -= 8
             adult_reasons.append("explicit_age_restriction")
         if self.compiled_patterns['adult_site_pattern'].search(url_lower):
-            adult_score += 5
+            adult_score -= 5
             adult_reasons.append("adult_site_pattern")
-
-        total_score += adult_score * 1.5
+        raw_score += adult_score * 1.5
         if adult_reasons:
             all_reasons['adult'] = adult_reasons
 
         spam_score, spam_reasons = 0, []
         tld = self.get_tld(domain)
         if tld in self.suspicious_tlds:
-            spam_score += 5
+            spam_score -= 5
             spam_reasons.append(f"suspicious_tld({tld})")
-
         spam_matches = len(self.spam_keywords_regex.findall(url_lower))
         if spam_matches > 0:
-            spam_score += min(spam_matches * 4, 15)
+            spam_score -= min(spam_matches * 4, 15)
             spam_reasons.append(f"spam_keywords({spam_matches})")
-
         url_len = len(url)
         if url_len > 300:
-            spam_score += 4
+            spam_score -= 4
             spam_reasons.append("extremely_long_url")
         elif url_len > 200:
-            spam_score += 2
+            spam_score -= 2
             spam_reasons.append("very_long_url")
-
         if '?' in url:
             params = url.count('&') + 1
             if params > 20:
-                spam_score += 4
+                spam_score -= 4
                 spam_reasons.append(f"excessive_params({params})")
             elif params > 10:
-                spam_score += 2
+                spam_score -= 2
                 spam_reasons.append(f"many_params({params})")
-
         if self.compiled_patterns['long_numbers'].search(url):
-            spam_score += 3
+            spam_score -= 3
             spam_reasons.append("very_long_numbers")
         if url.count('-') > 8 or url.count('_') > 8:
-            spam_score += 2
+            spam_score -= 2
             spam_reasons.append("excessive_separators")
-
         if self.compiled_patterns['suspicious_url_pattern'].search(url):
-            spam_score += 2
+            spam_score -= 2
             spam_reasons.append("suspicious_url_patterns")
-
-        total_score += spam_score
+        raw_score += spam_score
         if spam_reasons:
             all_reasons['spam'] = spam_reasons
 
-        # Structure scoring
         structure_score, structure_reasons = 0, []
         if url.startswith('https://'):
-            structure_score -= 2
+            structure_score += 2
             structure_reasons.append("https_secure")
         if self.compiled_patterns['low_value_extensions'].search(url):
-            structure_score += 3
+            structure_score -= 3
             structure_reasons.append("media_file")
-
-        total_score += structure_score
+        raw_score += structure_score
         if structure_reasons:
             all_reasons['structure'] = structure_reasons
 
-        return max(0, total_score), all_reasons
+        normalized_score = math.tanh(raw_score / 20.0)
+        normalized_score = max(-1.0, min(1.0, normalized_score))
+
+        return normalized_score, all_reasons
 
 def process_batch_worker_optimized(rows_list):
     prioritizer = OptimizedURLPrioritizer()
     results = []
-
     if hasattr(rows_list, '__iter__') and not isinstance(rows_list, (list, tuple)):
         rows_list = list(rows_list)
-
     domain_counter = Counter()
     for row in rows_list:
         if hasattr(row, 'url') and row.url:
@@ -226,14 +209,11 @@ def process_batch_worker_optimized(rows_list):
             url = row[1]
         else:
             continue
-
         if url:
             domain = prioritizer.extract_domain(url)
             if domain:
                 domain_counter[domain] += 1
-
     url_fingerprints = set()
-
     for row in rows_list:
         try:
             if hasattr(row, 'url'):
@@ -243,49 +223,35 @@ def process_batch_worker_optimized(rows_list):
                 url = row.get('url', '')
                 timestamp = row.get('timestamp', '')
             elif isinstance(row, (list, tuple)) and len(row) > 1:
-                # TSV format: timestamp, url
                 url = row[1]
                 timestamp = row[0]
             else:
-                print(f"Warning: Unknown row type encountered: {type(row)}. Skipping.")
                 continue
-
             if not url:
                 continue
-
             domain = prioritizer.extract_domain(url)
             if not domain:
-                print(f"Warning: Could not extract domain for URL: {url}. Skipping.")
                 continue
-
-            # Calculate domain frequency and percentage
             current_domain_frequency = domain_counter[domain]
             domain_frequency_pct = (current_domain_frequency / len(rows_list)) if rows_list else 0.0
-
             fingerprint = prioritizer.get_url_fingerprint(url)
             if fingerprint in url_fingerprints:
                 continue
             url_fingerprints.add(fingerprint)
-
-            priority_score, reasons = prioritizer.calculate_priority_score_fast(url, timestamp, domain)
-            is_active = priority_score < 10.0
+            score, reasons = prioritizer.calculate_score_fast(url, timestamp, domain)
+            is_active = score > 0.0
             received_at_dt = datetime.now(timezone.utc)
-
             results.append(URLAnalysisResult(
                 url=url,
                 timestamp=timestamp,
                 domain=domain,
-                priority_score=priority_score,
+                score=score,
                 reasons=reasons,
                 domain_frequency=current_domain_frequency,
                 domain_frequency_pct=domain_frequency_pct,
                 is_active=is_active,
-                received_at=received_at_dt.isoformat() # Store as ISO format string
+                received_at=received_at_dt.isoformat()
             ))
         except Exception as e:
-            print(f"Error processing URL {row.get('url', str(row)) if isinstance(row, dict) else str(row)}: {e}")
-            import traceback
-            traceback.print_exc()
             continue
-
     return results

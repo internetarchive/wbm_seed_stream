@@ -13,3 +13,4 @@ indexnow/data
 *.pkl
 *.csv
 *.tsv
+artifacts

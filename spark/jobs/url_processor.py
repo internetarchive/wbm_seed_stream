@@ -1,10 +1,11 @@
 import json
 import os
 import sys
+import uuid
 
 import pandas as pd
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, lit, current_timestamp
 from pyspark.sql.types import (BooleanType, FloatType, IntegerType, StringType,
                                StructField, StructType, TimestampType)
 
@@ -16,9 +17,9 @@ PROCESSED_URL_SCHEMA = StructType([
     StructField("url", StringType(), True),
     StructField("timestamp", TimestampType(), True),
     StructField("domain", StringType(), True),
-    StructField("classification_score", FloatType(), True),
+    StructField("score", FloatType(), True),
     StructField("confidence", FloatType(), True),
-    StructField("reasons", StringType(), True),
+    StructField("meta", StringType(), True),
     StructField("domain_frequency", IntegerType(), True),
     StructField("domain_frequency_pct", FloatType(), True),
     StructField("is_spam", BooleanType(), True),
@@ -35,21 +36,22 @@ def process_url_batch(urls_list):
         output_data = []
         for result in processed_results:
             try:
-                reasons_json = json.dumps(result.reasons) if result.reasons else "{}"
+                reasons_data = result.reasons if result.reasons else {}
                 output_data.append({
                     "url": result.url,
                     "timestamp": result.timestamp,
                     "domain": result.domain,
-                    "classification_score": result.classification_score,
-                    "confidence": result.confidence,
-                    "reasons": reasons_json,
+                    "score": result.score,
+                    "confidence": None,
+                    "meta": json.dumps(reasons_data),
                     "domain_frequency": result.domain_frequency,
                     "domain_frequency_pct": result.domain_frequency_pct,
-                    "is_spam": result.is_spam,
+                    "is_spam": not result.is_active if hasattr(result, 'is_active') else None,
                     "received_at": result.received_at
                 })
             except Exception as e:
                 print(f"Error processing individual result: {e}")
+                print(f"Available attributes: {dir(result)}")
                 continue
 
         return output_data
@@ -68,13 +70,13 @@ def process_pandas_partition(iterator):
             try:
                 timestamp_val = row['timestamp']
                 url_val = row['url']
-                
+
                 if pd.isna(timestamp_val) or pd.isna(url_val):
                     continue
-                
+
                 timestamp_clean = str(timestamp_val).strip()
                 url_clean = str(url_val).strip()
-                
+
                 if not url_clean or url_clean.lower() in ['nan', 'none', ''] or len(url_clean) < 5:
                     continue
 
@@ -82,9 +84,9 @@ def process_pandas_partition(iterator):
                     "timestamp": timestamp_clean,
                     "url": url_clean
                 }
-                
+
                 rows_as_dicts.append(row_dict)
-                
+
             except Exception as e:
                 print(f"Error processing row {idx}: {e}")
                 continue
@@ -115,7 +117,7 @@ def process_pandas_partition(iterator):
             except Exception as e:
                 print(f"DEBUG: received_at timestamp conversion failed: {e}")
                 output_pandas_df["received_at"] = pd.Timestamp.now()
-        
+
         if "timestamp" in output_pandas_df.columns:
             try:
                 if not pd.api.types.is_datetime64_any_dtype(output_pandas_df["timestamp"]):
@@ -140,7 +142,7 @@ def process_pandas_partition(iterator):
                 output_pandas_df["timestamp"] = pd.Timestamp.now()
 
         output_pandas_df = output_pandas_df.dropna(subset=['url', 'domain'])
-        
+
         if len(output_pandas_df) == 0:
             continue
 
@@ -152,7 +154,7 @@ def set_job_description(spark, description, group_id="url_processing"):
         spark.sparkContext.setJobDescription(description)
     except Exception as e:
         print(f"DEBUG: Failed to set job description: {e}")
-        
+
 def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
     try:
         print(f"DEBUG: Starting processing of {input_path}")
@@ -200,29 +202,99 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
         print(f"DEBUG: Writing Parquet to {output_path}")
         processed_df.write.mode("overwrite").option("compression", "snappy").parquet(output_path)
         print("DEBUG: Parquet write completed")
+        
         try:
             set_job_description(spark, f"Writing analyzed URLs to database: {input_filename}")
             print("DEBUG: Writing to database")
+
+            batch_id = str(uuid.uuid4())
+
             df_to_write = processed_df.select(
                 col("url"),
-                col("timestamp"),
-                col("classification_score"),
-                col("confidence"),
-                col("reasons")
-            )
+                col("timestamp").alias("received_at"),
+                col("score"),
+                col("meta")
+            ).withColumn("source", lit("tsv_processor")) \
+             .withColumn("processed_at", current_timestamp()) \
+             .withColumn("status", lit("processed")) \
+             .withColumn("priority", lit(0)) \
+             .withColumn("analysis_batch_id", lit(batch_id)) \
+             .withColumn("last_modified", current_timestamp())
+
+            staging_table = f"urls_staging_{batch_id.replace('-', '_')}"
+            
+            print(f"DEBUG: Writing to staging table: {staging_table}")
+            
             df_to_write.write \
                 .format("jdbc") \
                 .option("url", settings.JDBC_URL) \
-                .option("dbtable", "analyzed_urls") \
+                .option("dbtable", staging_table) \
                 .option("user", settings.POSTGRES_USER) \
                 .option("password", settings.POSTGRES_PASSWORD) \
                 .option("driver", "org.postgresql.Driver") \
                 .option("numPartitions", "8") \
-                .mode("append") \
+                .mode("overwrite") \
                 .save()
+            
+            print("DEBUG: Staging table write completed, now transferring to main table")
+            
+            import psycopg2
+            from urllib.parse import urlparse
+            
+            jdbc_url = settings.JDBC_URL
+            if jdbc_url.startswith("jdbc:postgresql://"):
+                parsed = urlparse(jdbc_url.replace("jdbc:postgresql://", "postgresql://"))
+                host = parsed.hostname
+                port = parsed.port or 5432
+                database = parsed.path.lstrip('/')
+            else:
+                host = getattr(settings, 'POSTGRES_HOST', 'localhost')
+                port = getattr(settings, 'POSTGRES_PORT', 5432)
+                database = getattr(settings, 'POSTGRES_DB', 'postgres')
+            
+            conn = psycopg2.connect(
+                host=host,
+                port=port,
+                database=database,
+                user=settings.POSTGRES_USER,
+                password=settings.POSTGRES_PASSWORD
+            )
+            
+            try:
+                with conn.cursor() as cur:
+                    transfer_sql = f"""
+                        INSERT INTO urls (url, received_at, score, meta, source, processed_at, status, priority, analysis_batch_id, last_modified)
+                        SELECT 
+                            url, 
+                            received_at, 
+                            score, 
+                            meta::jsonb, 
+                            source, 
+                            processed_at, 
+                            status, 
+                            priority, 
+                            analysis_batch_id, 
+                            last_modified
+                        FROM {staging_table}
+                    """
+                    
+                    cur.execute(transfer_sql)
+                    transferred_count = cur.rowcount
+                    print(f"DEBUG: Transferred {transferred_count} rows to main table")
+                    
+                    cur.execute(f"DROP TABLE {staging_table}")
+                    print("DEBUG: Staging table cleaned up")
+                    
+                conn.commit()
+            finally:
+                conn.close()
+            
             print("DEBUG: Database write completed")
         except Exception as e:
             print(f"DEBUG: Database write failed (continuing anyway): {e}")
+            import traceback
+            traceback.print_exc()
+        
         spark.sparkContext.setJobGroup("", "")
         spark.sparkContext.setJobDescription("")
         print("DEBUG: Processing completed successfully")
