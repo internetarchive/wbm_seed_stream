@@ -13,7 +13,7 @@ class URL(Base):
         Index('idx_urls_score', 'score'),
         Index('idx_urls_analysis_batch_id', 'analysis_batch_id'),
     )
-    
+        
     id = Column(Integer, primary_key=True, autoincrement=True)
     url = Column(Text, nullable=False)
     source = Column(String(32), nullable=False)
@@ -25,3 +25,20 @@ class URL(Base):
     analysis_batch_id = Column(String(36), nullable=True, index=True)
     meta = Column(JSON)
     last_modified = Column(DateTime, nullable=True)
+
+class DomainReputation(Base):
+    __tablename__ = 'domain_reputation'
+    __table_args__ = (
+        Index('idx_domain_reputation_score', 'reputation_score'),
+        Index('idx_domain_reputation_updated_at', 'updated_at'),
+    )
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    domain = Column(String(255), nullable=False, unique=True, index=True)
+    reputation_score = Column(Float, nullable=True, index=True)
+    total_urls_seen = Column(Integer, nullable=False, default=0)
+    malicious_urls_count = Column(Integer, nullable=False, default=0)
+    benign_urls_count = Column(Integer, nullable=False, default=0)
+    first_seen_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+    meta = Column(JSON)
