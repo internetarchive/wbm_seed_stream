@@ -97,12 +97,15 @@ def profile_spark_stage(profiler, stage_name):
     return StageProfiler(profiler, stage_name)
 
 
+_current_profiler = None
+
 def get_active_profiler():
-    return getattr(get_active_profiler, "_current_profiler", None)
+    return _current_profiler
 
 
 def set_active_profiler(profiler):
-    get_active_profiler._current_profiler = profiler
+    global _current_profiler
+    _current_profiler = profiler
 
 
 def profile_domain_ranking(profiler, operation_name):

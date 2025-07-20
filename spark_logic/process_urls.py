@@ -1,11 +1,8 @@
 import os
 import sys
-import glob
-import shutil
-import subprocess
 import json
 from collections import defaultdict
-import numpy as np
+import time
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '''..''')))
 
@@ -14,13 +11,20 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit
 from pyspark.sql.types import (BooleanType, FloatType, IntegerType, StringType,
                                StructField, StructType, TimestampType, LongType)
+from pyspark import StorageLevel
 from spark_logic.score_urls import score_urls_batch
 from spark_logic.rank_domains import DomainRanker
-from spark_logic.create_summary import create_summary
+from writers.database_writer import write_to_database
+from writers.parquet_writer import write_to_parquet
+from writers.summary_writer import write_summary
+from writers.good_data_handler import handle_good_data
+from writers.domain_processor import create_domain_ranker, aggregate_domain_stats_vectorized, collect_domain_updates_from_temp_files, update_domain_reputations, cleanup_temp_files
 from spark.config.spark_config import (
     SparkConfig,
     get_spark_session
 )
+
+from schema import PROCESSED_URL_SCHEMA
 from testing.profiler_integration import (
     get_active_profiler,
     profile_spark_stage,
@@ -37,143 +41,14 @@ RAW_INPUT_SCHEMA = StructType([
     StructField("data_source", StringType(), True)
 ])
 
-PROCESSED_URL_SCHEMA = StructType([
-    StructField("url", StringType(), True),
-    StructField("timestamp", TimestampType(), True),
-    StructField("domain", StringType(), True),
-    StructField("score", FloatType(), True),
-    StructField("confidence", FloatType(), True),
-    StructField("meta", StringType(), True),
-    StructField("domain_frequency", IntegerType(), True),
-    StructField("domain_frequency_pct", FloatType(), True),
-    StructField("is_spam", BooleanType(), True),
-    StructField("received_at", TimestampType(), True),
-    StructField("domain_reputation_score", FloatType(), True),
-    StructField("data_source", StringType(), True),
-])
-
-summary_stats = {
-    'total_urls': 0,
-    'spam_urls': 0,
-    'benign_urls': 0,
-    'domains_processed': set(),
-    'score_sum': 0.0,
-    'confidence_sum': 0.0
-}
-
-def create_domain_ranker():
-    try:
-        return DomainRanker()
-    except Exception as e:
-        print(f"FATAL ERROR: Failed to initialize DomainRanker: {e}")
-        raise
-
-def clear_good_data_folder():
-    if os.path.exists(SparkConfig.GOOD_DATA_FOLDER):
-        try:
-            shutil.rmtree(SparkConfig.GOOD_DATA_FOLDER)
-        except Exception as e:
-            print(f"ERROR: Failed to remove existing good data folder: {e}")
-            raise
-
-    try:
-        os.makedirs(SparkConfig.GOOD_DATA_FOLDER, exist_ok=True)
-    except Exception as e:
-        print(f"ERROR: Failed to create good data folder: {e}")
-        raise
-
-def generate_good_data():
-    script_path = os.path.join(os.path.dirname(__file__), '..', 'testing', 'get_good_data.py')
-
-    if not os.path.exists(script_path):
-        print(f"ERROR: Good data script not found at {script_path}")
-        raise FileNotFoundError(f"Good data script not found at {script_path}")
-
-    try:
-        cmd = [sys.executable, script_path, '--wiki', str(SparkConfig.WIKI_DAYS), '--mediacloud', str(SparkConfig.MEDIACLOUD_DAYS)]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=True)
-        print(f"Good data generation completed successfully")
-        if result.stdout:
-            print(f"STDOUT: {result.stdout}")
-        if result.stderr:
-            print(f"STDERR: {result.stderr}")
-    except subprocess.TimeoutExpired:
-        print("ERROR: Good data generation timed out after 300 seconds")
-        raise
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: Good data generation failed with return code {e.returncode}")
-        print(f"STDOUT: {e.stdout}")
-        print(f"STDERR: {e.stderr}")
-        raise
-    except Exception as e:
-        print(f"ERROR: Unexpected error during good data generation: {e}")
-        raise
-
-def load_good_data_urls(spark: SparkSession):
-    if not os.path.exists(SparkConfig.GOOD_DATA_FOLDER):
-        print(f"WARNING: Good data folder does not exist: {SparkConfig.GOOD_DATA_FOLDER}")
-        return None
-
-    tsv_files = glob.glob(os.path.join(SparkConfig.GOOD_DATA_FOLDER, "*.tsv"))
-    if not tsv_files:
-        print(f"WARNING: No TSV files found in {SparkConfig.GOOD_DATA_FOLDER}")
-        return None
-
-    try:
-        good_df = spark.read.csv(tsv_files, sep='\t', schema=StructType([
-            StructField("timestamp", LongType(), True),
-            StructField("url", StringType(), True)
-        ]), header=False)
-        return good_df
-    except Exception as e:
-        print(f"ERROR: Failed to read good data files with Spark: {e}")
-        return None
-
-def aggregate_domain_stats_vectorized(results_df: pd.DataFrame) -> dict:
-    if results_df.empty:
-        return {}
-
-    grouped = results_df.groupby('domain').agg({
-        'score': 'mean',
-        'is_spam': ['sum', 'count'],
-        'data_source': 'first'
-    }).reset_index()
-
-    grouped.columns = ['domain', 'avg_score', 'malicious_count', 'total_count', 'data_source']
-
-    domain_aggregates = {}
-    for _, row in grouped.iterrows():
-        domain = row['domain']
-        avg_score = row['avg_score']
-        malicious_count = int(row['malicious_count'])
-        total_count = int(row['total_count'])
-        data_source = row['data_source']
-
-        if data_source == SparkConfig.GOOD_DATA_LABEL:
-            reputation_score = max(0.5, avg_score)
-        else:
-            reputation_score = avg_score
-
-        domain_aggregates[domain] = {
-            'reputation_score': reputation_score,
-            'total_urls': total_count,
-            'malicious_urls': malicious_count,
-            'benign_urls': total_count - malicious_count
-        }
-
-    return domain_aggregates
-
-def update_summary_stats(results_df: pd.DataFrame):
-    global summary_stats
-    if results_df.empty:
-        return
-    
-    summary_stats['total_urls'] += len(results_df)
-    summary_stats['spam_urls'] += results_df['is_spam'].sum()
-    summary_stats['benign_urls'] += (~results_df['is_spam']).sum()
-    summary_stats['domains_processed'].update(results_df['domain'].unique())
-    summary_stats['score_sum'] += results_df['score'].sum()
-    summary_stats['confidence_sum'] += results_df['confidence'].sum()
+def execute_with_job_name(spark, job_name, action_func):
+    print(f"\n=== EXECUTING: {job_name} ===")
+    start_time = time.time()
+    spark.sparkContext.setJobDescription(job_name)
+    result = action_func()
+    duration = time.time() - start_time
+    print(f"=== COMPLETED: {job_name} in {duration:.2f}s ===\n")
+    return result
 
 def process_pandas_partition_optimized(iterator, broadcast_domain_reputations):
     try:
@@ -189,62 +64,92 @@ def process_pandas_partition_optimized(iterator, broadcast_domain_reputations):
         'benign_urls': 0
     })
 
-    processed_dfs = []
-
     for pandas_df in iterator:
-        if len(pandas_df) == 0:
+        if pandas_df is None or len(pandas_df) == 0:
             continue
 
         try:
-            is_good_data = pandas_df['data_source'] == SparkConfig.GOOD_DATA_LABEL
-            good_mask = is_good_data & pandas_df['url'].notna() & (pandas_df['url'].str.len() > 0)
-            input_mask = (~is_good_data &
-                         pandas_df['url'].notna() &
-                         pandas_df['timestamp'].notna() &
-                         (pandas_df['url'].str.len() > 5) &
-                         pandas_df['url'].str.startswith(('http://', 'https://')))
-
-            combined_mask = good_mask | input_mask
-            clean_df = pandas_df[combined_mask].copy()
-
-            if len(clean_df) == 0:
-                continue
-
-            results_df = score_urls_batch(clean_df, all_domain_reputations)
-
-            if results_df.empty:
-                continue
-
-            update_summary_stats(results_df)
-            processed_dfs.append(results_df)
-
-            batch_updates = aggregate_domain_stats_vectorized(results_df)
-            for domain, stats in batch_updates.items():
-                partition_domain_updates[domain]['reputation_score'] += stats['reputation_score'] * stats['total_urls']
-                partition_domain_updates[domain]['total_urls'] += stats['total_urls']
-                partition_domain_updates[domain]['malicious_urls'] += stats['malicious_urls']
-                partition_domain_updates[domain]['benign_urls'] += stats['benign_urls']
+            memory_usage = pandas_df.memory_usage(deep=True).sum()
+            if memory_usage > 10_000_000:
+                chunk_size = max(50, len(pandas_df) // 50)
+                for i in range(0, len(pandas_df), chunk_size):
+                    chunk = pandas_df.iloc[i:i+chunk_size].copy()
+                    try:
+                        yield from process_single_chunk(chunk, all_domain_reputations, partition_domain_updates)
+                    except Exception as e:
+                        print(f"ERROR: Failed to process chunk: {e}")
+                        continue
+            else:
+                yield from process_single_chunk(pandas_df, all_domain_reputations, partition_domain_updates)
 
         except Exception as e:
             print(f"ERROR: Failed to process pandas partition: {e}")
-            import traceback
-            traceback.print_exc()
             continue
 
-    if processed_dfs:
-        final_df = pd.concat(processed_dfs, ignore_index=True)
+    save_domain_updates(partition_domain_updates)
 
+def process_single_chunk(pandas_df, all_domain_reputations, partition_domain_updates):
+    try:
+        is_good_data = pandas_df['data_source'] == SparkConfig.GOOD_DATA_LABEL
+        good_mask = is_good_data & pandas_df['url'].notna() & (pandas_df['url'].str.len() > 0)
+        input_mask = (~is_good_data &
+                     pandas_df['url'].notna() &
+                     pandas_df['timestamp'].notna() &
+                     (pandas_df['url'].str.len() > 5) &
+                     pandas_df['url'].str.startswith(('http://', 'https://')))
+
+        combined_mask = good_mask | input_mask
+        clean_df = pandas_df[combined_mask].copy()
+
+        if len(clean_df) == 0:
+            return
+
+        clean_df = clean_df[clean_df['url'].str.len() <= 1000]
+
+        if len(clean_df) == 0:
+            return
+
+        results_df = score_urls_batch(clean_df, all_domain_reputations)
+
+        if results_df.empty:
+            return
+
+        results_df = validate_and_clean_results(results_df)
+
+        if results_df.empty:
+            return
+
+        batch_updates = aggregate_domain_stats_vectorized(results_df)
+        for domain, stats in batch_updates.items():
+            partition_domain_updates[domain]['reputation_score'] += stats['reputation_score'] * stats['total_urls']
+            partition_domain_updates[domain]['total_urls'] += stats['total_urls']
+            partition_domain_updates[domain]['malicious_urls'] += stats['malicious_urls']
+            partition_domain_updates[domain]['benign_urls'] += stats['benign_urls']
+
+        yield results_df
+
+    except Exception as e:
+        print(f"ERROR: Failed to process chunk: {e}")
+
+def validate_and_clean_results(results_df):
+    try:
         current_time = pd.Timestamp.now()
         for field in PROCESSED_URL_SCHEMA:
-            if field.name not in final_df.columns:
+            if field.name not in results_df.columns:
                 if field.name == "received_at":
-                    final_df[field.name] = current_time
+                    results_df[field.name] = current_time
                 elif field.name == "data_source":
-                    final_df[field.name] = "input_data"
+                    results_df[field.name] = "input_data"
                 else:
-                    final_df[field.name] = None
+                    results_df[field.name] = None
 
-        output_df = final_df[[field.name for field in PROCESSED_URL_SCHEMA]]
+        output_df = results_df[[field.name for field in PROCESSED_URL_SCHEMA]]
+
+        for col in output_df.columns:
+            if output_df[col].dtype == 'object':
+                output_df[col] = output_df[col].astype(str)
+                output_df[col] = output_df[col].str.slice(0, 1000)
+                output_df[col] = output_df[col].replace('nan', None)
 
         if not pd.api.types.is_datetime64_any_dtype(output_df["timestamp"]):
             output_df["timestamp"] = pd.to_datetime(output_df["timestamp"], errors='coerce', utc=True)
@@ -254,9 +159,13 @@ def process_pandas_partition_optimized(iterator, broadcast_domain_reputations):
 
         output_df = output_df.dropna(subset=['url', 'domain'])
 
-        if not output_df.empty:
-            yield output_df
+        return output_df
 
+    except Exception as e:
+        print(f"ERROR: Failed to validate results: {e}")
+        return pd.DataFrame()
+
+def save_domain_updates(partition_domain_updates):
     for domain, stats in partition_domain_updates.items():
         if stats['total_urls'] > 0:
             stats['reputation_score'] = stats['reputation_score'] / stats['total_urls']
@@ -264,92 +173,17 @@ def process_pandas_partition_optimized(iterator, broadcast_domain_reputations):
     if partition_domain_updates:
         import tempfile
         import os
-        
+
         temp_dir = tempfile.gettempdir()
         temp_file = os.path.join(temp_dir, f"domain_updates_{os.getpid()}_{hash(str(partition_domain_updates))}.json")
-        
+
         try:
             with open(temp_file, 'w') as f:
                 json.dump(dict(partition_domain_updates), f)
-            print(f"Domain updates written to: {temp_file}")
         except Exception as e:
             print(f"Failed to write domain updates: {e}")
 
-def collect_domain_updates_from_temp_files():
-    import tempfile
-    import glob
-    import os
-    
-    temp_dir = tempfile.gettempdir()
-    update_files = glob.glob(os.path.join(temp_dir, "domain_updates_*.json"))
-    
-    all_updates = defaultdict(lambda: {
-        'reputation_score': 0.0,
-        'total_urls': 0,
-        'malicious_urls': 0,
-        'benign_urls': 0
-    })
-    
-    for file_path in update_files:
-        try:
-            with open(file_path, 'r') as f:
-                updates = json.load(f)
-            
-            for domain, stats in updates.items():
-                all_updates[domain]['reputation_score'] += stats['reputation_score'] * stats['total_urls']
-                all_updates[domain]['total_urls'] += stats['total_urls']
-                all_updates[domain]['malicious_urls'] += stats['malicious_urls']
-                all_updates[domain]['benign_urls'] += stats['benign_urls']
-            
-            os.remove(file_path)
-            
-        except Exception as e:
-            print(f"Failed to process update file {file_path}: {e}")
-    
-    for domain, stats in all_updates.items():
-        if stats['total_urls'] > 0:
-            stats['reputation_score'] = stats['reputation_score'] / stats['total_urls']
-    
-    return dict(all_updates)
-
-def generate_summary_from_stats(output_path: str, job_output_base_dir: str):
-    global summary_stats
-    
-    try:
-        summary_data = {
-            'total_urls_processed': summary_stats['total_urls'],
-            'spam_urls': summary_stats['spam_urls'],
-            'benign_urls': summary_stats['benign_urls'],
-            'unique_domains': len(summary_stats['domains_processed']),
-            'average_score': summary_stats['score_sum'] / summary_stats['total_urls'] if summary_stats['total_urls'] > 0 else 0.0,
-            'average_confidence': summary_stats['confidence_sum'] / summary_stats['total_urls'] if summary_stats['total_urls'] > 0 else 0.0,
-            'spam_percentage': (summary_stats['spam_urls'] / summary_stats['total_urls'] * 100) if summary_stats['total_urls'] > 0 else 0.0
-        }
-        
-        summary_file_path = os.path.join(job_output_base_dir, "job_summary.json")
-        os.makedirs(os.path.dirname(summary_file_path), exist_ok=True)
-        
-        with open(summary_file_path, 'w') as f:
-            json.dump(summary_data, f, indent=2)
-        
-        print(f"Job summary saved to: {summary_file_path}")
-        print(f"Summary: {summary_data}")
-        
-    except Exception as e:
-        print(f"ERROR: Failed to generate summary from stats: {e}")
-        raise
-
 def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
-    global summary_stats
-    summary_stats = {
-        'total_urls': 0,
-        'spam_urls': 0,
-        'benign_urls': 0,
-        'domains_processed': set(),
-        'score_sum': 0.0,
-        'confidence_sum': 0.0
-    }
-    
     if not os.path.exists(input_path):
         print(f"ERROR: Input file does not exist: {input_path}")
         raise FileNotFoundError(f"Input file does not exist: {input_path}")
@@ -361,15 +195,17 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
         if SparkConfig.USE_GOOD_DATA:
             with profile_spark_stage(profiler, "good_data_generation"):
                 print("Generating and loading good data...")
-                spark.sparkContext.setJobDescription("Loading good data")
                 try:
-                    clear_good_data_folder()
-                    generate_good_data()
-                    good_df = load_good_data_urls(spark)
+                    good_df = handle_good_data(spark)
                     if good_df:
                         good_df = good_df.withColumn("data_source", lit(SparkConfig.GOOD_DATA_LABEL))
-                        good_df = good_df.repartition(spark.sparkContext.defaultParallelism)
+                        
+                        execute_with_job_name(spark, "STEP_1A_GOOD_DATA_COUNT", 
+                                            lambda: good_df.count())
+                        
+                        good_df = good_df.repartition(spark.sparkContext.defaultParallelism // 2)
                         print(f"Successfully loaded and repartitioned good data.")
+                        
                         if profiler:
                             log_spark_dataframe_operation(profiler, "good_data_load", good_df.count(), spark.sparkContext.defaultParallelism)
                 except Exception as e:
@@ -378,7 +214,6 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
 
         with profile_spark_stage(profiler, "tsv_data_loading"):
             print(f"Loading TSV data from: {input_path}")
-            spark.sparkContext.setJobDescription("Loading TSV data with settings")
             try:
                 if profiler and os.path.exists(input_path):
                     file_size = os.path.getsize(input_path)
@@ -395,10 +230,15 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
                          ]))
                          .csv(input_path, header=False))
 
-                df_raw = df_raw.repartition(spark.sparkContext.defaultParallelism * 2)
+                df_raw = df_raw.repartition(spark.sparkContext.defaultParallelism)
+
+                raw_count = execute_with_job_name(spark, "STEP_1B_RAW_DATA_COUNT", 
+                                                lambda: df_raw.count())
+                
+                print(f"Loaded {raw_count} raw records from TSV")
 
                 if profiler:
-                    log_spark_dataframe_operation(profiler, "raw_data_load", df_raw.count(), spark.sparkContext.defaultParallelism * 2)
+                    log_spark_dataframe_operation(profiler, "raw_data_load", raw_count, spark.sparkContext.defaultParallelism * 2)
 
             except Exception as e:
                 print(f"ERROR: Failed to read TSV file: {e}")
@@ -413,8 +253,14 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
         if good_df:
             try:
                 df_raw = df_raw.unionByName(good_df)
+                
+                union_count = execute_with_job_name(spark, "STEP_2_UNION_COUNT", 
+                                                  lambda: df_raw.count())
+                
+                print(f"After union with good data: {union_count} total records")
+                
                 if profiler:
-                    log_spark_dataframe_operation(profiler, "union_with_good_data", df_raw.count())
+                    log_spark_dataframe_operation(profiler, "union_with_good_data", union_count)
             except Exception as e:
                 print(f"ERROR: Failed to union good data DataFrame: {e}")
                 raise
@@ -422,47 +268,68 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
         with profile_spark_stage(profiler, "data_filtering"):
             try:
                 print("Applying minimal filtering...")
-                spark.sparkContext.setJobDescription("Minimal URL filtering")
                 df_cleaned = df_raw.filter(col("url").isNotNull() & (col("url") != ""))
-                df_cleaned = df_cleaned.repartition(spark.sparkContext.defaultParallelism)
+                df_cleaned = df_cleaned.repartition(spark.sparkContext.defaultParallelism // 2)
+
+                print("Counting filtered records...")
+                initial_count = execute_with_job_name(spark, "STEP_3A_FILTERED_COUNT", 
+                                                    lambda: df_cleaned.count())
+                
+                print("Removing duplicate URLs...")
+                df_cleaned = df_cleaned.dropDuplicates(["url", "data_source"])
+                
+                final_count = execute_with_job_name(spark, "STEP_3B_DEDUPED_COUNT", 
+                                                  lambda: df_cleaned.count())
+                
+                duplicates_removed = initial_count - final_count
+                print(f"Removed {duplicates_removed} duplicate URLs ({initial_count} -> {final_count})")
 
                 if profiler:
-                    log_spark_dataframe_operation(profiler, "filtered_data", df_cleaned.count(), spark.sparkContext.defaultParallelism)
+                    log_spark_dataframe_operation(profiler, "filtered_data", final_count, spark.sparkContext.defaultParallelism)
                     log_memory_checkpoint(profiler, "after_filtering")
 
             except Exception as e:
                 print(f"ERROR: Failed to filter DataFrame: {e}")
                 raise
 
-        with profile_spark_stage(profiler, "domain_reputation_loading"):
-            print("Loading domain reputation data...")
-            spark.sparkContext.setJobDescription("Loading domain reputation data")
-            try:
-                domain_ranker = create_domain_ranker()
-                all_domain_reputations = domain_ranker.get_all_domain_reputations()
-                broadcast_domain_reputations = spark.sparkContext.broadcast(all_domain_reputations)
+        domain_ranker = create_domain_ranker()
 
-                if profiler:
-                    log_database_operation(profiler, "load_domain_reputations", "domain_reputation", len(all_domain_reputations))
-                    log_memory_checkpoint(profiler, "after_domain_load")
+        if SparkConfig.READ_REPUTATION:
+            with profile_spark_stage(profiler, "domain_reputation_loading"):
+                print("Loading domain reputation data...")
+                try:
+                    all_domain_reputations = domain_ranker.get_all_domain_reputations()
+                    broadcast_domain_reputations = spark.sparkContext.broadcast(all_domain_reputations)
 
-            except Exception as e:
-                print(f"ERROR: Failed to load domain reputation data: {e}")
-                raise
+                    if profiler:
+                        log_database_operation(profiler, "load_domain_reputations", "domain_reputation", len(all_domain_reputations))
+                        log_memory_checkpoint(profiler, "after_domain_load")
+
+                except Exception as e:
+                    print(f"ERROR: Failed to load domain reputation data: {e}")
+                    raise
+        else:
+            print("Skipping domain reputation loading (READ_REPUTATION=False)")
+            broadcast_domain_reputations = spark.sparkContext.broadcast({})
 
         with profile_spark_stage(profiler, "url_scoring_processing"):
             print("Processing URLs with scoring...")
-            spark.sparkContext.setJobDescription("URL scoring")
             try:
                 processed_df = df_cleaned.mapInPandas(
                     lambda iterator: process_pandas_partition_optimized(iterator, broadcast_domain_reputations),
                     schema=PROCESSED_URL_SCHEMA
                 )
-
-                processed_df = processed_df.repartition(spark.sparkContext.defaultParallelism)
-
+                
+                processed_df = processed_df.coalesce(12)
+                processed_df.persist(StorageLevel.MEMORY_AND_DISK)
+                
+                processed_count = execute_with_job_name(spark, "STEP_4_URL_SCORING_AND_COUNT", 
+                                                      lambda: processed_df.count())
+                
+                print(f"Processed and scored {processed_count} URLs")
+                
                 if profiler:
-                    log_spark_dataframe_operation(profiler, "url_scoring", processed_df.count(), spark.sparkContext.defaultParallelism)
+                    log_spark_dataframe_operation(profiler, "url_scoring", processed_count, 12)
                     log_memory_checkpoint(profiler, "after_url_scoring")
 
             except Exception as e:
@@ -470,58 +337,45 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
                 raise
 
         try:
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        except Exception as e:
-            print(f"ERROR: Failed to create output directory: {e}")
-            raise
-
-        with profile_spark_stage(profiler, "parquet_output"):
-            print(f"Writing processed URLs to: {output_path}")
-            spark.sparkContext.setJobDescription("Writing processed URLs to parquet")
-            try:
-                (processed_df
-                 .write
-                 .mode("overwrite")
-                 .option("compression", "snappy")
-                 .option("maxRecordsPerFile", 500000)
-                 .parquet(output_path))
-
-                if profiler:
-                    total_size = 0
-                    if os.path.exists(output_path):
-                        for root, dirs, files in os.walk(output_path):
-                            for file in files:
-                                total_size += os.path.getsize(os.path.join(root, file))
-                    log_file_operation(profiler, "write", output_path, total_size)
-
-            except Exception as e:
-                print(f"ERROR: Failed to write parquet file: {e}")
-                raise
-
-        with profile_spark_stage(profiler, "domain_reputation_updates"):
-            print("Collecting and updating domain reputations...")
-            
-            accumulated_updates = collect_domain_updates_from_temp_files()
-            
-            if accumulated_updates:
-                print(f"Updating {len(accumulated_updates)} domains...")
-                domain_ranker.update_domain_reputation_batch(accumulated_updates)
-                print("Domain reputation updates completed successfully")
-
-                if profiler:
-                    log_domain_stats_update(profiler, len(accumulated_updates), "batch_update")
-                    log_database_operation(profiler, "update_domain_reputations", "domain_reputation", len(accumulated_updates))
+            if SparkConfig.WRITE_PARQUET:
+                with profile_spark_stage(profiler, "parquet_output"):
+                    try:
+                        execute_with_job_name(spark, "STEP_5A_WRITE_PARQUET", 
+                                            lambda: write_to_parquet(processed_df, output_path))
+                    except Exception as e:
+                        print(f"ERROR: Failed to write parquet file: {e}")
+                        raise
             else:
-                print("No domain updates to apply")
+                print("Skipping parquet output (WRITE_PARQUET=False)")
 
-        try:
-            if 'broadcast_domain_reputations' in locals():
-                broadcast_domain_reputations.unpersist(blocking=False)
-        except Exception as e:
-            print(f"WARNING: Failed to unpersist broadcast variables: {e}")
+            if SparkConfig.WRITE_DB:
+                with profile_spark_stage(profiler, "database_output"):
+                    try:
+                        from writers.database_writer import write_to_database
+                        execute_with_job_name(spark, "STEP_5B_WRITE_DATABASE", 
+                                            lambda: write_to_database(processed_df))
+                        print("Database write completed successfully")
+                    except Exception as e:
+                        print(f"ERROR: Failed to write to database: {e}")
+                        raise
+            else:
+                print("Skipping database output (WRITE_DB=False)")
+
+            if SparkConfig.WRITE_SUMMARY:
+                with profile_spark_stage(profiler, "summary_generation"):
+                    try:
+                        execute_with_job_name(spark, "STEP_5C_WRITE_SUMMARY", 
+                                            lambda: write_summary(processed_df, output_path))
+                        print("Summary generation completed")
+                    except Exception as e:
+                        print(f"WARNING: Summary generation failed: {e}")
+            else:
+                print("Skipping summary generation (WRITE_SUMMARY=False)")
+
+        finally:
+            processed_df.unpersist()
 
         print("Processing completed successfully")
-        
         return True
 
     except Exception as e:
@@ -530,6 +384,23 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
         traceback.print_exc()
         raise
 
+def write_partition_to_database(partition, batch_size):
+    try:
+        from writers.database_writer import insert_batch
+        
+        batch = []
+        for row in partition:
+            batch.append(row)
+            if len(batch) >= batch_size:
+                insert_batch(batch)  
+                batch = []
+        
+        if batch:
+            insert_batch(batch)
+                
+    except Exception as e:
+        print(f"ERROR: Failed to write partition to database: {e}")
+        raise
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -550,23 +421,13 @@ if __name__ == "__main__":
 
     try:
         process_tsv_file(spark_session, input_path, output_path)
-        print("Generating job summary...")
-        try:
-            job_output_base_dir = os.path.dirname(os.path.dirname(output_path))
-            generate_summary_from_stats(output_path, job_output_base_dir)
-            print("Job summary generation completed")
-        except Exception as e:
-            print(f"WARNING: Job summary generation failed: {e}")
-
     except Exception as e:
         print(f"FATAL ERROR: Processing failed: {e}")
         sys.exit(1)
     finally:
         if spark_session:
             try:
-                print("Stopping Spark session...")
                 spark_session.stop()
-                print("Spark session stopped")
             except Exception as e:
                 print(f"WARNING: Failed to stop Spark session: {e}")
 

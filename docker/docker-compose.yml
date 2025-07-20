@@ -8,8 +8,111 @@ services:
       POSTGRES_PASSWORD: password
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - /dev/shm:/dev/shm
     ports:
       - "5434:5432"
+    shm_size: 8g
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=4GB"
+      - "-c"
+      - "maintenance_work_mem=2GB"
+      - "-c"
+      - "max_wal_size=8GB"
+      - "-c"
+      - "min_wal_size=2GB"
+      - "-c"
+      - "checkpoint_timeout=15min"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+      - "-c"
+      - "wal_buffers=64MB"
+      - "-c"
+      - "fsync=off"
+      - "-c"
+      - "synchronous_commit=off"
+      - "-c"
+      - "full_page_writes=off"
+      - "-c"
+      - "autovacuum=off"
+      - "-c"
+      - "max_connections=50"
+      - "-c"
+      - "max_prepared_transactions=0"
+      - "-c"
+      - "work_mem=256MB"
+      - "-c"
+      - "effective_cache_size=12GB"
+      - "-c"
+      - "random_page_cost=1.1"
+      - "-c"
+      - "seq_page_cost=1"
+      - "-c"
+      - "cpu_tuple_cost=0.01"
+      - "-c"
+      - "cpu_index_tuple_cost=0.005"
+      - "-c"
+      - "cpu_operator_cost=0.0025"
+      - "-c"
+      - "parallel_tuple_cost=0.1"
+      - "-c"
+      - "parallel_setup_cost=1000.0"
+      - "-c"
+      - "effective_io_concurrency=200"
+      - "-c"
+      - "max_worker_processes=12"
+      - "-c"
+      - "max_parallel_workers_per_gather=6"
+      - "-c"
+      - "max_parallel_workers=12"
+      - "-c"
+      - "max_parallel_maintenance_workers=6"
+      - "-c"
+      - "wal_level=minimal"
+      - "-c"
+      - "max_wal_senders=0"
+      - "-c"
+      - "archive_mode=off"
+      - "-c"
+      - "log_min_duration_statement=10000"
+      - "-c"
+      - "log_line_prefix='%t [%p]: '"
+      - "-c"
+      - "log_checkpoints=on"
+      - "-c"
+      - "log_connections=off"
+      - "-c"
+      - "log_disconnections=off"
+      - "-c"
+      - "log_lock_waits=on"
+      - "-c"
+      - "deadlock_timeout=1s"
+      - "-c"
+      - "statement_timeout=600s"
+      - "-c"
+      - "idle_in_transaction_session_timeout=300s"
+      - "-c"
+      - "temp_buffers=256MB"
+      - "-c"
+      - "max_locks_per_transaction=256"
+      - "-c"
+      - "commit_delay=100"
+      - "-c"
+      - "commit_siblings=10"
+    deploy:
+      resources:
+        limits:
+          memory: 20G
+        reservations:
+          memory: 16G
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
 
 volumes:
   postgres_data:

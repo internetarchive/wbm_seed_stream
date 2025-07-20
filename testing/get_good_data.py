@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import re
 from dotenv import load_dotenv
 
-from testing.profiler_integration import get_active_profiler, profile_spark_stage, log_file_operation
+from profiler_integration import get_active_profiler, profile_spark_stage, log_file_operation
 
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
 load_dotenv(dotenv_path)
@@ -242,59 +242,59 @@ def main():
                         resp.raise_for_status()
                         decompressed_data = gzip.decompress(resp.content)
                         rss_content = decompressed_data.decode('utf-8')
-                    except Exception as e:
-                        print(f"Error fetching or decompressing MediaCloud for {date}: {e}")
-                        continue
-                try:
-                    items = re.findall(r'<item>.*?</item>', rss_content, re.DOTALL)
-                    for item_str in items:
-                        link_match = re.search(r'<link>(.*?)</link>', item_str)
-                        if not link_match:
-                            continue
-                        article_url = link_match.group(1).replace('&amp;', '&')
-                        if "wikipedia.org" in article_url:
-                            continue
-                        title_match = re.search(r'<title>(.*?)</title>', item_str)
-                        pubdate_match = re.search(r'<pubDate>(.*?)</pubDate>', item_str)
-                        domain_match = re.search(r'<domain>(.*?)</domain>', item_str)
-                        source_match = re.search(
-                            r'<source url="([^"]*)"[^>]*mcFeedId="([^"]*)"[^>]*mcSourceId="([^"]*)"',
-                            item_str,
-                        )
-                        parsed_mc = urlparse(article_url)
-                        if parsed_mc.netloc not in [
-                            "web.archive.org",
-                            "archive.today",
-                            "archive.is",
-                        ]:
-                            meta = {
-                                "title": title_match.group(1) if title_match else '',
-                                "domain": domain_match.group(1) if domain_match else '',
-                                "mc_feed_id": source_match.group(2)
-                                if source_match
-                                else '',
-                                "mc_source_id": source_match.group(3)
-                                if source_match
-                                else '',
-                            }
-                            timestamp = (
-                                pubdate_match.group(1)
-                                if pubdate_match
-                                else datetime.now().isoformat()
+                        
+                        items = re.findall(r'<item>.*?</item>', rss_content, re.DOTALL)
+                        for item_str in items:
+                            link_match = re.search(r'<link>(.*?)</link>', item_str)
+                            if not link_match:
+                                continue
+                            article_url = link_match.group(1).replace('&amp;', '&')
+                            if "wikipedia.org" in article_url:
+                                continue
+                            title_match = re.search(r'<title>(.*?)</title>', item_str)
+                            pubdate_match = re.search(r'<pubDate>(.*?)</pubDate>', item_str)
+                            domain_match = re.search(r'<domain>(.*?)</domain>', item_str)
+                            source_match = re.search(
+                                r'<source url="([^"]*)"[^>]*mcFeedId="([^"]*)"[^>]*mcSourceId="([^"]*)"',
+                                item_str,
                             )
-                            source_uri = source_match.group(1) if source_match else "mediacloud"
-                            row = [
-                                article_url,
-                                source_uri,
-                                timestamp,
-                                "mediacloud",
-                                "mediacloud",
-                                json.dumps(meta),
-                            ]
-                            writer.writerow(row)
-                            mediacloud_count += 1
-                except Exception as e:
-                    print(f"Error parsing MediaCloud content: {e}")
+                            parsed_mc = urlparse(article_url)
+                            if parsed_mc.netloc not in [
+                                "web.archive.org",
+                                "archive.today",
+                                "archive.is",
+                            ]:
+                                meta = {
+                                    "title": title_match.group(1) if title_match else '',
+                                    "domain": domain_match.group(1) if domain_match else '',
+                                    "mc_feed_id": source_match.group(2)
+                                    if source_match
+                                    else '',
+                                    "mc_source_id": source_match.group(3)
+                                    if source_match
+                                    else '',
+                                }
+                                timestamp = (
+                                    pubdate_match.group(1)
+                                    if pubdate_match
+                                    else datetime.now().isoformat()
+                                )
+                                source_uri = source_match.group(1) if source_match else "mediacloud"
+                                row = [
+                                    article_url,
+                                    source_uri,
+                                    timestamp,
+                                    "mediacloud",
+                                    "mediacloud",
+                                    json.dumps(meta),
+                                ]
+                                writer.writerow(row)
+                                mediacloud_count += 1
+                                
+                    except Exception as e:
+                        print(f"Error fetching or processing MediaCloud data for {date}: {e}")
+                        continue
+                    
                     time.sleep(SLEEP_INTERVAL)
                 total_processed += mediacloud_count
         else:
