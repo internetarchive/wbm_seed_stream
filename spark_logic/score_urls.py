@@ -95,8 +95,9 @@ if SPAM_KEYWORDS:
 def extract_domains_vectorized(urls: pd.Series) -> pd.Series:
     domains = np.empty(len(urls), dtype=object)
     url_array = urls.values
-    protocol_mask = np.char.find(url_array.astype(str), '://') == -1
-    url_array = np.where(protocol_mask, '//' + url_array.astype(str), url_array)
+    url_str_array = np.asarray(url_array, dtype=str)
+    protocol_mask = np.char.find(url_str_array, '://') == -1
+    url_array = np.where(protocol_mask, '//' + url_str_array, url_str_array)
 
     for i in range(len(url_array)):
         url = url_array[i]

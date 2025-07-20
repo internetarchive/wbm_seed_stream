@@ -96,7 +96,7 @@ class FileWatcher:
 
         job_output_tsv_dir = None
 
-        if SparkConfig.CREATE_TSV:
+        if SparkConfig.WRITE_TSV:
             job_output_tsv_dir = os.path.join(job_output_root_dir, "tsv")
             os.makedirs(job_output_tsv_dir, exist_ok=True)
 
@@ -121,7 +121,6 @@ class FileWatcher:
         profiler.log_process_event("spark_setup_end", "Spark environment setup completed")
 
         java_options = get_java_opens_options()
-
         spark_submit_command = get_spark_memory_config()
 
         if os.path.exists(SparkConfig.POSTGRESQL_JDBC_DRIVER_PATH):
@@ -159,7 +158,7 @@ class FileWatcher:
             logger.info(f"Spark job completed - process_urls.py finished processing {input_filename}")
             profiler.log_process_event("spark_job_end", f"Spark job completed for {input_filename}")
 
-            if SparkConfig.CREATE_TSV and job_output_tsv_dir:
+            if SparkConfig.WRITE_TSV and job_output_tsv_dir:
                 logger.info(f"Starting parquet to TSV conversion for {input_filename}")
                 profiler.log_process_event("tsv_conversion_start", "Starting parquet to TSV conversion")
                 tsv_output_file_path = os.path.join(job_output_tsv_dir, "data.tsv")

@@ -41,7 +41,7 @@ cd docker/postgres/
 docker-compose up -d
 ```
 
-This will start a PostgreSQL with TimescaleDB instance accessible on `localhost:5432`.
+This will start a PostgreSQL with TimescaleDB instance accessible on `localhost:5434`.
 
 ### 4. Running the File Ingestion Pipeline
 
