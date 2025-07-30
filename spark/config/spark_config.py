@@ -4,14 +4,16 @@ import sys
 import logging
 
 class SparkConfig:
+    USE_GOOD_DATA = True # works
 
-    WRITE_TSV = False
-    USE_GOOD_DATA = False
-    WRITE_DB = True
-    WRITE_PARQUET = False
-    WRITE_SUMMARY = False
-    READ_REPUTATION = False
-    WRITE_REPUTATION = False
+    READ_REPUTATION = False # works
+    WRITE_REPUTATION = False # works
+
+    WRITE_DB = True # works -- enabled
+    WRITE_PARQUET = False # works
+    WRITE_TSV = False # not working yet
+
+    WRITE_SUMMARY = True # works
 
     SUBPROCESS_TIMEOUT = 18000
     WIKI_DAYS = 0
@@ -22,14 +24,13 @@ class SparkConfig:
     WATCH_DIRECTORY = "data/input"
     OUTPUT_BASE_DIRECTORY = "data/output"
     GOOD_DATA_FOLDER = "data/storage/good_data"
-    GOOD_DATA_LABEL = "good_data"
 
     POSTGRESQL_JDBC_DRIVER_PATH = "/Users/akshithchowdary/jars/postgresql-42.7.7.jar"
 
     SPARK_MEMORY_CONFIG = {
         "master": "local[12]",
-        "driver_memory": "52g",
-        "executor_memory": "52g",
+        "driver_memory": "56g",
+        "executor_memory": "56g",
         "executor_cores": "12",
         "num_executors": "1"
     }
@@ -40,27 +41,27 @@ class SparkConfig:
         "spark.kryo.unsafe": "true",
         "spark.kryoserializer.buffer.max": "2047m",
         "spark.sql.adaptive.enabled": "true",
+        "spark.python.worker.faulthandler.enabled": "true",
         "spark.sql.adaptive.coalescePartitions.enabled": "true",
         "spark.ui.showConsoleProgress": "false",
         "spark.sql.execution.arrow.pyspark.enabled": "true",
         "spark.sql.execution.arrow.pyspark.fallback.enabled": "true",
-        "spark.sql.shuffle.partitions": "48",
-        "spark.default.parallelism": "48",
-        "spark.driver.maxResultSize": "20g",
-        "spark.executor.maxResultSize": "20g",
+        "spark.sql.shuffle.partitions": "96",
+        "spark.default.parallelism": "96",
+        "spark.driver.maxResultSize": "32g",
+        "spark.executor.maxResultSize": "32g",
         "spark.memory.offHeap.enabled": "true",
-        "spark.memory.offHeap.size": "12g",
+        "spark.memory.offHeap.size": "16g",
         "spark.network.timeout": "800s",
         "spark.executor.heartbeatInterval": "30s",
         "spark.sql.adaptive.skewJoin.enabled": "true",
         "spark.python.worker.reuse": "true",
-        "spark.python.worker.memory": "12g",
-        "spark.sql.execution.arrow.maxRecordsPerBatch": "50000",
-        "spark.sql.inMemoryColumnarStorage.batchSize": "50000",
-        "spark.memory.storageFraction": "0.2",
-        "spark.memory.executionFraction": "0.8",
-        "spark.driver.memory": "52g",
-        "spark.executor.memory": "52g",
+        "spark.python.worker.memory": "24g",
+        "spark.sql.execution.arrow.maxRecordsPerBatch": "100000",
+        "spark.sql.inMemoryColumnarStorage.batchSize": "100000",
+        "spark.memory.storageFraction": "0.15",
+        "spark.memory.executionFraction": "0.85",
+
         "spark.task.maxFailures": "3",
         "spark.stage.maxConsecutiveAttempts": "3",
         "spark.excludeOnFailure.enabled": "false",
@@ -70,22 +71,22 @@ class SparkConfig:
         "spark.rpc.askTimeout": "800s",
         "spark.rpc.lookupTimeout": "800s",
         "spark.sql.broadcastTimeout": "800s",
-        "spark.driver.maxDirectResultSize": "12g",
+        "spark.driver.maxDirectResultSize": "24g",
         "spark.sql.execution.arrow.pyspark.selfDestruct.enabled": "true",
         "spark.sql.streaming.metricsEnabled": "false",
         "spark.metrics.conf.*.sink.slf4j.class": "org.apache.spark.metrics.sink.Slf4jSink",
-        "spark.sql.adaptive.advisoryPartitionSizeInBytes": "256MB",
+        "spark.sql.adaptive.advisoryPartitionSizeInBytes": "128MB",
         "spark.sql.adaptive.nonEmptyPartitionRatioForBroadcastJoin": "0.2",
         "spark.sql.adaptive.maxShuffledHashJoinLocalMapThreshold": "0",
         "spark.sql.adaptive.localShuffleReader.enabled": "true",
         "spark.sql.adaptive.skewJoin.skewedPartitionFactor": "3",
-        "spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes": "512MB",
-        "spark.sql.sources.parallelPartitionDiscovery.threshold": "48",
+        "spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes": "256MB",
+        "spark.sql.sources.parallelPartitionDiscovery.threshold": "96",
         "spark.sql.sources.parallelPartitionDiscovery.parallelism": "12",
-        "spark.sql.files.maxPartitionBytes": "268435456",
+        "spark.sql.files.maxPartitionBytes": "134217728",
         "spark.sql.adaptive.coalescePartitions.parallelismFirst": "false",
         "spark.sql.adaptive.coalescePartitions.minPartitionNum": "12",
-        "spark.sql.adaptive.coalescePartitions.initialPartitionNum": "48",
+        "spark.sql.adaptive.coalescePartitions.initialPartitionNum": "96",
         "spark.sql.execution.sortBeforeRepartition": "true",
         "spark.locality.wait": "0s",
         "spark.locality.wait.node": "0s",
@@ -96,14 +97,16 @@ class SparkConfig:
         "spark.executor.instances": "1",
         "spark.dynamicAllocation.enabled": "false",
         "spark.shuffle.service.enabled": "false",
-        "spark.sql.adaptive.autoBroadcastJoinThreshold": "100MB",
+        "spark.sql.adaptive.autoBroadcastJoinThreshold": "256MB",
         "spark.sql.adaptive.join.enabled": "true",
         "spark.sql.cbo.enabled": "true",
         "spark.sql.cbo.joinReorder.enabled": "true",
         "spark.sql.statistics.histogram.enabled": "true",
-        "spark.serializer.objectStreamReset": "1000",
+        "spark.serializer.objectStreamReset": "2000",
         "spark.kryo.referenceTracking": "false",
-        "spark.kryoserializer.buffer": "1024k",
+        "spark.kryoserializer.buffer": "2048k",
+        "spark.sql.session.timeZone": "UTC",
+        "spark.sql.session.locale": "en_US",
         "spark.rdd.compress": "true",
         "spark.io.compression.codec": "lz4",
         "spark.shuffle.compress": "true",
@@ -115,7 +118,7 @@ class SparkConfig:
         "spark.sql.parquet.binaryAsString": "false",
         "spark.sql.parquet.int96AsTimestamp": "true",
         "spark.sql.parquet.cacheMetadata": "true",
-        "spark.sql.parquet.columnarReaderBatchSize": "8192",
+        "spark.sql.parquet.columnarReaderBatchSize": "16384",
         "spark.sql.parquet.enableVectorizedReader": "true",
         "spark.sql.orc.filterPushdown": "true",
         "spark.sql.orc.splits.include.file.footer": "true",
@@ -149,12 +152,14 @@ class SparkConfig:
         "PYTHONHASHSEED": "0",
         "SPARK_LOG_LEVEL": "WARN",
         "SPARK_KRYO_UNSAFE": "true",
+        "TZ": "UTC",
+        "LC_ALL": "en_US.UTF-8",
         "OMP_NUM_THREADS": "12",
         "MKL_NUM_THREADS": "12",
         "OPENBLAS_NUM_THREADS": "12"
     }
 
-    PROJECT_MODULES = ["config", "spark_logic", "spark", "utils", "models.py"]
+    PROJECT_MODULES = ["config", "spark_logic", "spark", "utils", "models.py", "writers", "testing"]
     SPARK_LOGGERS = [
         'org.apache.spark',
         'org.sparkproject',
