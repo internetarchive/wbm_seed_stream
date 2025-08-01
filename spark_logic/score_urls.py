@@ -8,6 +8,7 @@ import pandas as pd
 from collections import Counter
 import hashlib
 import math
+from spark.config.spark_config import SparkConfig
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from schema import PROCESSED_URL_SCHEMA
@@ -28,11 +29,18 @@ def load_list_from_file(filepath: str) -> FrozenSet[str]:
     except (IOError, OSError) as e:
         raise IOError(f"Failed to read file {filepath}: {e}")
 
-NSFW_KEYWORDS = load_list_from_file("data/storage/lists/nsfw_keywords.txt")
-SPAM_KEYWORDS = load_list_from_file("data/storage/lists/spam_keywords.txt")
-NSFW_DOMAINS = load_list_from_file("data/storage/lists/nsfw_domains.txt")
-QUALITY_DOMAINS = load_list_from_file("data/storage/lists/quality_domains.txt")
-NEWS_DOMAINS = load_list_from_file("data/storage/lists/news_domains.txt")
+if SparkConfig.USE_LISTS:
+    NSFW_KEYWORDS = load_list_from_file("data/storage/lists/nsfw_keywords.txt")
+    SPAM_KEYWORDS = load_list_from_file("data/storage/lists/spam_keywords.txt")
+    NSFW_DOMAINS = load_list_from_file("data/storage/lists/nsfw_domains.txt")
+    QUALITY_DOMAINS = load_list_from_file("data/storage/lists/quality_domains.txt")
+    NEWS_DOMAINS = load_list_from_file("data/storage/lists/news_domains.txt")
+else:
+    NSFW_KEYWORDS = frozenset()
+    SPAM_KEYWORDS = frozenset()
+    NSFW_DOMAINS = frozenset()
+    QUALITY_DOMAINS = frozenset()
+    NEWS_DOMAINS = frozenset()
 
 def build_regex_pattern(keywords: FrozenSet[str]) -> re.Pattern | None:
     if not keywords:
@@ -80,7 +88,7 @@ def parse_urls_vectorized(urls: pd.Series) -> pd.DataFrame:
 
     parts = urls_str.str.extract(URL_PARSE_REGEX)
     parts.rename(columns={'domain': 'domain', 'path': 'path', 'query': 'query'}, inplace=True)
-    
+
     parts['domain'] = parts['domain'].str.lower().fillna('unknown.invalid')
     parts['path'] = parts['path'].fillna('')
     parts['query'] = parts['query'].fillna('')
@@ -90,7 +98,7 @@ def extract_features_vectorized(pdf: pd.DataFrame) -> Dict[str, np.ndarray]:
     features = {}
     urls, domains, paths, queries, timestamps = pdf['url'], pdf['domain'], pdf['path'], pdf['query'], pdf['timestamp']
     path_query = paths + '?' + queries
-    
+
     url_lengths = urls.str.len().fillna(0)
     features['very_short_url'] = (url_lengths <= 15).values
     features['very_long_url'] = (url_lengths > 1024).values
@@ -123,6 +131,8 @@ def extract_features_vectorized(pdf: pd.DataFrame) -> Dict[str, np.ndarray]:
     features['domain_hyphen_heavy'] = (domains.str.count('-') > 2).values
 
     features['domain_entropy'] = calculate_entropy_vectorized(domains)
+    features['path_entropy'] = calculate_entropy_vectorized(paths)
+
     vowel_counts = domains.str.count(r'[aeiou]').fillna(0)
     consonant_counts = domains.str.count(r'[bcdfghjklmnpqrstvwxyz]').fillna(0)
     features['vowel_consonant_ratio'] = (vowel_counts / consonant_counts.replace(0, 1)).astype(np.float32).values
@@ -134,10 +144,19 @@ def extract_features_vectorized(pdf: pd.DataFrame) -> Dict[str, np.ndarray]:
     features['is_root_page'] = (paths.isin(['/', '']))
     features['is_ugc_path'] = paths.str.contains(r'/(user|profile|c|channel|u)/', regex=True, na=False).values
 
+    features['path_has_article_slug'] = paths.str.contains(r'/[a-z0-9-]+-\d{4,}/?', na=False, regex=True)
+    features['path_has_date'] = paths.str.contains(r'/20\d{2}/\d{1,2}/', na=False, regex=True)
+    features['path_is_descriptive'] = (paths.str.count('-') >= 2) & (paths.str.len() > 15)
+
     if NSFW_PATTERN:
         features['is_nsfw_content'] = path_query.str.contains(NSFW_PATTERN.pattern, regex=True, na=False).values
+    else:
+        features['is_nsfw_content'] = np.zeros(len(pdf), dtype=bool)
+
     if SPAM_PATTERN:
         features['is_spam_content'] = path_query.str.contains(SPAM_PATTERN.pattern, regex=True, na=False).values
+    else:
+        features['is_spam_content'] = np.zeros(len(pdf), dtype=bool)
 
     features['is_nsfw_domain'] = domains.isin(NSFW_DOMAINS).values
     features['is_quality_domain'] = domains.isin(QUALITY_DOMAINS).values
@@ -164,43 +183,57 @@ def calculate_scores(features: Dict[str, np.ndarray], pdf: pd.DataFrame, all_dom
     score = np.zeros(n_urls, dtype=np.float32)
 
     risk_weights = {
-        'has_ip_address': -1.5, 'suspicious_tld': -0.6, 'is_url_shortener': -0.4, 'contains_phishing': -2.5,
-        'contains_download': -0.7, 'is_malformed_url': -2.0, 'domain_is_numeric_heavy': -0.5,
-        'is_nsfw_content': -1.2, 'is_spam_content': -1.0, 'is_nsfw_domain': -1.8,
-        'path_keyword_stuffing': -1.2, 'is_media_or_api': -0.6, 'very_short_url': -0.7, 'no_scheme': -0.3,
-        'has_invalid_timestamp': -0.5, 'domain_hyphen_heavy': -0.3, 'excessive_params': -0.4,
-        'suspicious_chars_path': -0.5, 'excessive_encoding': -0.4, 'is_ugc_path': -0.3
+        'has_ip_address': -2.5, 'suspicious_tld': -0.8, 'is_url_shortener': -0.5, 'contains_phishing': -3.0,
+        'contains_download': -1.0, 'is_malformed_url': -3.0, 'domain_is_numeric_heavy': -0.8,
+        'is_nsfw_content': -1.5, 'is_spam_content': -1.2, 'is_nsfw_domain': -2.5,
+        'path_keyword_stuffing': -1.5, 'is_media_or_api': -0.7, 'very_short_url': -0.5, 'no_scheme': -0.3,
+        'has_invalid_timestamp': -0.5, 'domain_hyphen_heavy': -0.5, 'excessive_params': -0.6,
+        'suspicious_chars_path': -0.7, 'excessive_encoding': -0.6, 'is_ugc_path': -0.4
     }
-    
+
     priority_weights = {
-        'trustworthy_tld': 0.8, 'is_quality_domain': 0.5, 'is_news_domain': 1.0,
+        'trustworthy_tld': 1.2, 'is_quality_domain': 0.8, 'is_news_domain': 1.2,
     }
 
     for feature, weight in risk_weights.items():
         if feature in features:
             score += features[feature].astype(np.float32) * weight
-            
+
     for feature, weight in priority_weights.items():
         if feature in features:
             score += features[feature].astype(np.float32) * weight
 
-    is_trusted_source = features['is_news_domain'] | features['is_quality_domain']
+    heuristic_quality_score = np.zeros(n_urls, dtype=np.float32)
+    
+    is_readable_domain = (features['domain_entropy'] < 3.3) & \
+                         (~features['domain_is_numeric_heavy']) & \
+                         (~features['domain_hyphen_heavy'])
+    
+    heuristic_quality_score += is_readable_domain * 0.25
+    
     path_depth = features['path_depth']
-
+    is_article_path = features['path_has_article_slug'] | features['path_has_date'] | features['path_is_descriptive']
+    
     path_score = np.zeros(n_urls, dtype=np.float32)
-    path_score += features['is_root_page'] * 0.5
     
-    depth_penalty = (path_depth - 1) * 0.15
-    depth_bonus = (path_depth - 1) * 0.20
+    bonus_for_good_path = is_readable_domain & is_article_path
+    path_score += bonus_for_good_path * 0.6
     
-    path_score -= depth_penalty
-    path_score += np.where(is_trusted_source, depth_bonus, 0)
-    
+    path_depth_bonus = np.clip(path_depth, 2, 6) - 2 
+    path_score += (bonus_for_good_path * path_depth_bonus * 0.1)
+
+    path_score -= (path_depth > 10) * 1.0
+
     score += path_score
+    score += heuristic_quality_score
+
     score -= features['very_long_url'].astype(np.float32) * 0.5
 
     domain_entropy = features.get('domain_entropy', np.zeros(n_urls))
-    score -= np.clip((domain_entropy - 3.5) * 0.4, 0, None)
+    score -= np.clip((domain_entropy - 3.5) * 0.6, 0, None)
+
+    path_entropy = features.get('path_entropy', np.zeros(n_urls))
+    score -= np.clip((path_entropy - 4.2) * 0.5, 0, None)
     
     readability = np.clip(features.get('vowel_consonant_ratio', np.ones(n_urls)) * 0.25, -0.25, 0.25)
     score += readability
@@ -212,15 +245,15 @@ def calculate_scores(features: Dict[str, np.ndarray], pdf: pd.DataFrame, all_dom
         score -= anomaly_features['length_anomaly'].astype(np.float32) * 0.2
     if 'param_anomaly' in anomaly_features:
         score -= anomaly_features['param_anomaly'].astype(np.float32) * 0.2
-        
+
     spam_conditions = (
-        (score < -1.5) | features.get('contains_phishing', False) | features.get('is_nsfw_domain', False)
+        (score < -1.8) | features.get('contains_phishing', False) | features.get('is_nsfw_domain', False) | (features.get('domain_entropy', 0) > 4.2)
     )
     is_spam = np.array(spam_conditions, dtype=bool)
 
     risk_score_val = sum(features[f].astype(np.float32) * abs(w) for f, w in risk_weights.items() if f in features)
     trust_score_val = sum(features[f].astype(np.float32) * w for f, w in priority_weights.items() if f in features)
-    trust_score_val += path_score
+    trust_score_val += path_score + heuristic_quality_score
 
     return score, is_spam, risk_score_val, trust_score_val
 
@@ -238,7 +271,7 @@ def score_urls_batch(pdf: pd.DataFrame, all_domain_reputations: Dict[str, float]
     features = extract_features_vectorized(pdf_copy)
     anomaly_features = calculate_anomaly_features(pdf_copy)
     final_score, is_spam, risk_score, trust_score = calculate_scores(features, pdf_copy, all_domain_reputations, anomaly_features)
-    
+
     n_urls = len(pdf_copy)
     result_pdf = pd.DataFrame(index=pdf_copy.index)
     result_pdf['url'] = pdf_copy['url'].str.slice(0, MAX_URL_LENGTH)
@@ -259,17 +292,17 @@ def score_urls_batch(pdf: pd.DataFrame, all_domain_reputations: Dict[str, float]
 
     domain_counts = pdf_copy['domain'].map(pdf_copy['domain'].value_counts()).fillna(1)
     result_pdf['domain_frequency'] = domain_counts.astype(int)
-    
+
     url_values = pdf_copy['url'].astype(str).values
     result_pdf['url_hash'] = [hashlib.sha256(url.encode('utf-8', 'ignore')).hexdigest()[:16] for url in url_values]
 
     result_pdf['received_at'] = CURRENT_TIMESTAMP
     for col in ['domain', 'path', 'query', 'timestamp']:
         result_pdf[col] = pdf_copy[col]
-    
+
     if 'data_source' in pdf_copy.columns:
         result_pdf['data_source'] = pdf_copy['data_source']
-    
+
     if 'meta' in pdf_copy.columns:
         result_pdf['meta'] = pdf_copy['meta']
     else:

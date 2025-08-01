@@ -14,6 +14,8 @@ class SparkConfig:
     WRITE_TSV = False # not working yet
 
     WRITE_SUMMARY = True # works
+    
+    USE_LISTS = False # works
 
     SUBPROCESS_TIMEOUT = 18000
     WIKI_DAYS = 0
