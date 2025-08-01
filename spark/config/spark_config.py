@@ -9,7 +9,7 @@ class SparkConfig:
     READ_REPUTATION = True # works
     WRITE_REPUTATION = True # works
 
-    WRITE_DB = True # works -- enabled
+    WRITE_DB = False # works -- enabled
     WRITE_PARQUET = False # works
     WRITE_TSV = False # not working yet
 

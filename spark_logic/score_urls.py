@@ -33,7 +33,6 @@ SPAM_KEYWORDS = load_list_from_file("data/storage/lists/spam_keywords.txt")
 NSFW_DOMAINS = load_list_from_file("data/storage/lists/nsfw_domains.txt")
 QUALITY_DOMAINS = load_list_from_file("data/storage/lists/quality_domains.txt")
 NEWS_DOMAINS = load_list_from_file("data/storage/lists/news_domains.txt")
-UGC_DOMAINS = frozenset({'github.com', 'gitlab.com', 'gist.github.com', 'sourceforge.net', 'bitbucket.org'})
 
 def build_regex_pattern(keywords: FrozenSet[str]) -> re.Pattern | None:
     if not keywords:
@@ -96,7 +95,6 @@ def extract_features_vectorized(pdf: pd.DataFrame) -> Dict[str, np.ndarray]:
     features['very_short_url'] = (url_lengths <= 15).values
     features['very_long_url'] = (url_lengths > 1024).values
     features['no_scheme'] = (~urls.str.contains('://', na=False, regex=False)).values
-    features['long_url'] = (url_lengths > 200).values
     features['path_keyword_stuffing'] = (paths.str.count('/') > 10) & (paths.str.count('-') > 10)
 
     tlds = domains.str.rsplit('.', n=1, expand=True)[1].fillna('')
@@ -132,25 +130,9 @@ def extract_features_vectorized(pdf: pd.DataFrame) -> Dict[str, np.ndarray]:
     features['is_malformed_url'] = (domains == 'unknown.invalid').values
     features['has_invalid_timestamp'] = timestamps.isna().values
 
-    valid_timestamps = timestamps.fillna(CURRENT_TIMESTAMP)
-    hours = valid_timestamps.dt.hour
-    features['is_night_hours'] = ((hours < 6) | (hours > 22)).values
-    features['is_business_hours'] = ((hours >= 9) & (hours <= 17)).values
-    features['is_weekend'] = (valid_timestamps.dt.weekday >= 5).values
-
-    age_days = (CURRENT_TIMESTAMP - valid_timestamps).dt.days.fillna(9999)
-    features['is_very_recent'] = (age_days < 1).values
-    features['is_recent'] = ((age_days >= 1) & (age_days < 7)).values
-    features['is_old'] = (age_days > 365).values
-
-    path_segment_count = paths.str.count('/')
-    features['has_deep_path'] = (path_segment_count > 6).values
+    features['path_depth'] = paths.str.count('/').values
     features['is_root_page'] = (paths.isin(['/', '']))
-    features['is_canonical_page'] = (path_segment_count <= 3) & (~features['is_root_page'])
-    
-    is_github = domains == 'github.com'
-    features['is_github_repo_root'] = is_github & (path_segment_count == 2) & ~paths.str.contains('/blob/|/issues/|/pull/|/actions/')
-    features['is_github_non_code'] = is_github & paths.str.contains('/issues/|/pull/|/discussions/')
+    features['is_ugc_path'] = paths.str.contains(r'/(user|profile|c|channel|u)/', regex=True, na=False).values
 
     if NSFW_PATTERN:
         features['is_nsfw_content'] = path_query.str.contains(NSFW_PATTERN.pattern, regex=True, na=False).values
@@ -160,7 +142,6 @@ def extract_features_vectorized(pdf: pd.DataFrame) -> Dict[str, np.ndarray]:
     features['is_nsfw_domain'] = domains.isin(NSFW_DOMAINS).values
     features['is_quality_domain'] = domains.isin(QUALITY_DOMAINS).values
     features['is_news_domain'] = domains.isin(NEWS_DOMAINS).values
-    features['is_ugc_domain'] = domains.isin(UGC_DOMAINS).values
 
     return features
 
@@ -180,35 +161,48 @@ def calculate_anomaly_features(pdf: pd.DataFrame) -> Dict[str, np.ndarray]:
 
 def calculate_scores(features: Dict[str, np.ndarray], pdf: pd.DataFrame, all_domain_reputations: Dict[str, float], anomaly_features: Dict[str, np.ndarray]) -> tuple:
     n_urls = len(pdf)
-    priority_score = np.zeros(n_urls, dtype=np.float32)
+    score = np.zeros(n_urls, dtype=np.float32)
 
     risk_weights = {
-        'has_ip_address': -1.5, 'suspicious_tld': -0.6, 'is_url_shortener': -0.4, 'contains_phishing': -2.0,
-        'contains_download': -0.6, 'is_malformed_url': -2.0, 'domain_is_numeric_heavy': -0.4,
-        'is_nsfw_content': -1.0, 'is_spam_content': -0.8, 'is_nsfw_domain': -1.5, 'very_long_url': -0.5,
-        'path_keyword_stuffing': -0.8, 'is_media_or_api': -0.5, 'very_short_url': -0.7, 'no_scheme': -0.3,
-        'has_invalid_timestamp': -0.5, 'domain_hyphen_heavy': -0.2, 'excessive_params': -0.3,
-        'suspicious_chars_path': -0.4, 'excessive_encoding': -0.3, 'has_deep_path': -0.2
+        'has_ip_address': -1.5, 'suspicious_tld': -0.6, 'is_url_shortener': -0.4, 'contains_phishing': -2.5,
+        'contains_download': -0.7, 'is_malformed_url': -2.0, 'domain_is_numeric_heavy': -0.5,
+        'is_nsfw_content': -1.2, 'is_spam_content': -1.0, 'is_nsfw_domain': -1.8,
+        'path_keyword_stuffing': -1.2, 'is_media_or_api': -0.6, 'very_short_url': -0.7, 'no_scheme': -0.3,
+        'has_invalid_timestamp': -0.5, 'domain_hyphen_heavy': -0.3, 'excessive_params': -0.4,
+        'suspicious_chars_path': -0.5, 'excessive_encoding': -0.4, 'is_ugc_path': -0.3
     }
     
     priority_weights = {
-        'trustworthy_tld': 0.8, 'is_quality_domain': 0.15, 'is_news_domain': 0.7,
-        'is_root_page': 0.5, 'is_canonical_page': 0.3, 'is_github_repo_root': 0.6, 'is_github_non_code': 0.4,
-        'is_business_hours': 0.05,
+        'trustworthy_tld': 0.8, 'is_quality_domain': 0.5, 'is_news_domain': 1.0,
     }
 
-    score = priority_score
     for feature, weight in risk_weights.items():
         if feature in features:
             score += features[feature].astype(np.float32) * weight
+            
     for feature, weight in priority_weights.items():
         if feature in features:
             score += features[feature].astype(np.float32) * weight
 
-    domain_entropy = features.get('domain_entropy', np.zeros(n_urls))
-    score -= np.clip((domain_entropy - 3.8) * 0.25, 0, None)
+    is_trusted_source = features['is_news_domain'] | features['is_quality_domain']
+    path_depth = features['path_depth']
+
+    path_score = np.zeros(n_urls, dtype=np.float32)
+    path_score += features['is_root_page'] * 0.5
     
-    readability = np.clip(features.get('vowel_consonant_ratio', np.ones(n_urls)) * 0.1, -0.1, 0.1)
+    depth_penalty = (path_depth - 1) * 0.15
+    depth_bonus = (path_depth - 1) * 0.20
+    
+    path_score -= depth_penalty
+    path_score += np.where(is_trusted_source, depth_bonus, 0)
+    
+    score += path_score
+    score -= features['very_long_url'].astype(np.float32) * 0.5
+
+    domain_entropy = features.get('domain_entropy', np.zeros(n_urls))
+    score -= np.clip((domain_entropy - 3.5) * 0.4, 0, None)
+    
+    readability = np.clip(features.get('vowel_consonant_ratio', np.ones(n_urls)) * 0.25, -0.25, 0.25)
     score += readability
 
     domain_rep_scores = pdf['domain'].map(all_domain_reputations).fillna(0.0).astype(np.float32).values
@@ -220,12 +214,13 @@ def calculate_scores(features: Dict[str, np.ndarray], pdf: pd.DataFrame, all_dom
         score -= anomaly_features['param_anomaly'].astype(np.float32) * 0.2
         
     spam_conditions = (
-        (score < -1.2) | features.get('contains_phishing', False) | features.get('is_nsfw_domain', False)
+        (score < -1.5) | features.get('contains_phishing', False) | features.get('is_nsfw_domain', False)
     )
     is_spam = np.array(spam_conditions, dtype=bool)
 
     risk_score_val = sum(features[f].astype(np.float32) * abs(w) for f, w in risk_weights.items() if f in features)
     trust_score_val = sum(features[f].astype(np.float32) * w for f, w in priority_weights.items() if f in features)
+    trust_score_val += path_score
 
     return score, is_spam, risk_score_val, trust_score_val
 
