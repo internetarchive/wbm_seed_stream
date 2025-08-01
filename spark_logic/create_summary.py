@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import psycopg2
 from datetime import datetime
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, count, desc, asc, avg as spark_avg, stddev, percentile_approx, sum as spark_sum
