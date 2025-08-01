@@ -6,8 +6,8 @@ import logging
 class SparkConfig:
     USE_GOOD_DATA = True # works
 
-    READ_REPUTATION = False # works
-    WRITE_REPUTATION = False # works
+    READ_REPUTATION = True # works
+    WRITE_REPUTATION = True # works
 
     WRITE_DB = True # works -- enabled
     WRITE_PARQUET = False # works
