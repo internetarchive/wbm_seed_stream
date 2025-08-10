@@ -10,17 +10,18 @@ from spark.config.spark_config import SparkConfig
 
 def create_summary(processed_df: DataFrame, parquet_path: str, output_dir: str):
     start_time = time.time()
+    model_name = os.path.basename(os.path.normpath(output_dir))
 
     try:
         processed_df.persist()
-        
+
         total_urls = processed_df.count()
         if total_urls == 0:
-            print("No data found, creating empty summary")
+            print(f"No data found for model '{model_name}', creating empty summary")
             processed_df.unpersist()
             return None
 
-        print("Generating comprehensive summary report...")
+        print(f"Generating comprehensive summary report for model '{model_name}'...")
 
         unique_urls = processed_df.select("url").distinct().count()
         spam_count_row = processed_df.select(spark_sum(col("is_spam").cast("int"))).first()
@@ -45,10 +46,10 @@ def create_summary(processed_df: DataFrame, parquet_path: str, output_dir: str):
 
         domain_freq_data = processed_df.groupBy("domain").count().orderBy(desc("count")).limit(10).collect()
         domain_freq_data = [(row['domain'], row['count']) for row in domain_freq_data]
-        
+
         best_urls_data = processed_df.filter(col("score").isNotNull()).orderBy(desc("score")).limit(10).select("url", "score", "confidence", "domain", "data_source").collect()
         best_urls_data = [(row['url'], row['score'], row['confidence'], row['domain'], row['data_source']) for row in best_urls_data]
-        
+
         worst_urls_data = processed_df.filter(col("score").isNotNull()).orderBy(asc("score")).limit(10).select("url", "score", "confidence", "domain", "data_source").collect()
         worst_urls_data = [(row['url'], row['score'], row['confidence'], row['domain'], row['data_source']) for row in worst_urls_data]
 
@@ -82,9 +83,10 @@ def create_summary(processed_df: DataFrame, parquet_path: str, output_dir: str):
         with open(summary_path, 'w') as f:
             f.write("=" * 80 + "\n")
             f.write("URL PROCESSING SUMMARY REPORT\n")
+            f.write(f"MODEL: {model_name.upper()}\n")
             f.write("=" * 80 + "\n")
             f.write(f"Generated: {timestamp}\n")
-            f.write(f"Data Source: {parquet_path}\n")
+            f.write(f"Data Source (Parquet): {parquet_path}\n")
             f.write(f"Processing Time: {processing_time:.2f} seconds\n")
             f.write("\n")
             f.write("OVERALL STATISTICS\n")
@@ -157,56 +159,4 @@ def create_summary(processed_df: DataFrame, parquet_path: str, output_dir: str):
                 f.write(f"Good Data Avg Score: {good_data_stats['avg_score']:.4f}\n")
                 f.write(f"Good Data Median Score: {gd_median:.4f}\n")
                 f.write(f"Good Data Score StdDev: {good_data_stats['score_stddev']:.4f}\n")
-                f.write(f"Good Data 75th Percentile: {gd_p75:.4f}\n")
-                f.write(f"Good Data 95th Percentile: {gd_p95:.4f}\n")
-                f.write(f"Good Data Spam Rate: {(good_data_spam_count/good_data_count)*100:.2f}%\n")
-                f.write(f"Good Data Non-Spam Rate: {(good_data_non_spam_count/good_data_count)*100:.2f}%\n")
-                f.write("\n")
-
-                if input_data_stats and input_data_stats['avg_score'] is not None:
-                    score_lift = good_data_stats['avg_score'] - input_data_stats['avg_score']
-
-                    f.write("SCORING SYSTEM PERFORMANCE\n")
-                    f.write("-" * 40 + "\n")
-                    f.write(f"Good Data Avg Score: {good_data_stats['avg_score']:.4f}\n")
-                    f.write(f"Input Data Avg Score: {input_data_stats['avg_score']:.4f}\n")
-                    f.write(f"Score Lift (Good - Input): {score_lift:.4f}\n")
-                    if input_data_stats['avg_score'] > 0:
-                        f.write(f"Score Lift Percentage: {(score_lift/input_data_stats['avg_score'])*100:.2f}%\n")
-
-                    good_data_in_top_10 = sum(1 for _, _, _, _, data_source in best_urls_data if data_source == "good_data")
-                    good_data_in_bottom_10 = sum(1 for _, _, _, _, data_source in worst_urls_data if data_source == "good_data")
-
-                    f.write(f"Good Data in Top 10: {good_data_in_top_10}/10\n")
-                    f.write(f"Good Data in Bottom 10: {good_data_in_bottom_10}/10\n")
-
-                    performance_grade = "EXCELLENT" if score_lift > 0.5 else \
-                                      "GOOD" if score_lift > 0.2 else \
-                                      "FAIR" if score_lift > 0.0 else \
-                                      "POOR"
-                    f.write(f"SYSTEM PERFORMANCE GRADE: {performance_grade}\n")
-                    f.write("\n")
-
-                if good_data_top_domains:
-                    f.write("TOP GOOD DATA DOMAINS\n")
-                    f.write("-" * 40 + "\n")
-                    for i, (domain, frequency) in enumerate(good_data_top_domains, 1):
-                        domain = domain if domain else 'Unknown'
-                        f.write(f"{i}. {domain:<30} {frequency:>8,}\n")
-                    f.write("\n")
-
-            f.write("=" * 80 + "\n")
-            f.write("END OF REPORT\n")
-            f.write("=" * 80 + "\n")
-
-        processed_df.unpersist()
-        print(f"Summary report generated: {summary_path}")
-        return summary_path
-
-    except Exception as e:
-        import traceback
-        print(f"ERROR: Failed to generate summary: {e}")
-        traceback.print_exc()
-        if 'processed_df' in locals() and processed_df.is_cached:
-            processed_df.unpersist()
-        raise
+                f.write(f"Good Data 75th Percentile: {gd

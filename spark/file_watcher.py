@@ -40,28 +40,37 @@ class FileWatcher:
         for module in SparkConfig.PROJECT_MODULES:
             path = module
             if os.path.exists(path) and os.path.isdir(path):
-                for root, _, files in os.walk(path):
+                for root, dirs, files in os.walk(path):
+                    if '__pycache__' in dirs:
+                        dirs.remove('__pycache__')
                     for file in files:
-                        if file.endswith('.py') and os.path.getmtime(os.path.join(root, file)) > zip_mtime:
+                        if os.path.getmtime(os.path.join(root, file)) > zip_mtime:
                             return True
-            elif os.path.exists(path) and path.endswith('.py') and os.path.getmtime(path) > zip_mtime:
-                return True
+            elif os.path.isfile(path):
+                if os.path.getmtime(path) > zip_mtime:
+                    return True
         return False
 
     def _create_spark_zip(self):
         with zipfile.ZipFile(self.spark_zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for module in SparkConfig.PROJECT_MODULES:
                 if os.path.exists(module) and os.path.isdir(module):
-                    for root, _, files in os.walk(module):
+                    for root, dirs, files in os.walk(module):
+                        if '__pycache__' in dirs:
+                            dirs.remove('__pycache__')
                         for file in files:
-                            if file.endswith('.py'):
-                                file_path = os.path.join(root, file)
-                                arcname = os.path.relpath(file_path, '.')
-                                zipf.write(file_path, arcname)
-                elif module.endswith('.py'):
-                    zipf.write(module, module)
+                            file_path = os.path.join(root, file)
+                            arcname = os.path.relpath(file_path, '.')
+                            zipf.write(file_path, arcname)
+                elif os.path.isfile(module):
+                    arcname = os.path.relpath(module, '.')
+                    zipf.write(module, arcname)
 
     def _trigger_spark_job(self, original_input_file_path):
+        if not os.path.exists(original_input_file_path):
+            logger.warning(f"File not found, likely already processed: {original_input_file_path}")
+            return
+
         if self._should_recreate_zip():
             logger.info("Code modules have changed. Recreating spark_modules.zip...")
             self._create_spark_zip()
@@ -161,11 +170,6 @@ class FileWatcher:
             profiler.stop_monitoring()
 
     def start(self):
-        for filename in os.listdir(self.watch_directory):
-            file_path = os.path.join(self.watch_directory, filename)
-            if os.path.isfile(file_path) and filename.endswith('.tsv'):
-                self._trigger_spark_job(file_path)
-
         event_handler = FileEventHandler(self._trigger_spark_job)
         observer = Observer()
         observer.schedule(event_handler, self.watch_directory, recursive=False)

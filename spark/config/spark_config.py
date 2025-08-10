@@ -4,18 +4,21 @@ import sys
 import logging
 
 class SparkConfig:
-    USE_GOOD_DATA = True # works
+    USE_GOOD_DATA = True
+    READ_REPUTATION = True
+    WRITE_REPUTATION = True
 
-    READ_REPUTATION = True # works
-    WRITE_REPUTATION = True # works
+    WRITE_DB = False
+    WRITE_PARQUET = True
+    WRITE_TSV = False
 
-    WRITE_DB = False # works -- enabled
-    WRITE_PARQUET = False # works
-    WRITE_TSV = False # not working yet
+    WRITE_SUMMARY = True
+    USE_LISTS = False
 
-    WRITE_SUMMARY = True # works
-    
-    USE_LISTS = False # works
+    # ----------------
+    USE_METHODS = ["classical", "lightgbm.py"]
+    TRAIN_MODEL = False
+    # ----------------
 
     SUBPROCESS_TIMEOUT = 18000
     WIKI_DAYS = 0
@@ -80,7 +83,6 @@ class SparkConfig:
         "spark.sql.adaptive.advisoryPartitionSizeInBytes": "128MB",
         "spark.sql.adaptive.nonEmptyPartitionRatioForBroadcastJoin": "0.2",
         "spark.sql.adaptive.maxShuffledHashJoinLocalMapThreshold": "0",
-        "spark.sql.adaptive.localShuffleReader.enabled": "true",
         "spark.sql.adaptive.skewJoin.skewedPartitionFactor": "3",
         "spark.sql.adaptive.skewJoin.skewedPartitionThresholdInBytes": "256MB",
         "spark.sql.sources.parallelPartitionDiscovery.threshold": "96",
@@ -127,9 +129,7 @@ class SparkConfig:
         "spark.sql.orc.cache.stripe.details.size": "10000",
         "spark.sql.orc.enableVectorizedReader": "true",
         "spark.sql.hive.metastorePartitionPruning": "true",
-        "spark.sql.hive.filesourcePartitionFileCacheSize": "262144000",
-        "spark.sql.execution.arrow.pyspark.enabled": "true",
-        "spark.sql.execution.arrow.pyspark.fallback.enabled": "true"
+        "spark.sql.hive.filesourcePartitionFileCacheSize": "262144000"
     }
 
     JAVA_OPENS_OPTIONS = [
@@ -161,7 +161,7 @@ class SparkConfig:
         "OPENBLAS_NUM_THREADS": "12"
     }
 
-    PROJECT_MODULES = ["config", "spark_logic", "spark", "utils", "models.py", "writers", "testing"]
+    PROJECT_MODULES = ["config", "spark_logic", "spark", "utils", "models", "writers", "testing"]
     SPARK_LOGGERS = [
         'org.apache.spark',
         'org.sparkproject',

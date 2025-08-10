@@ -204,22 +204,22 @@ def calculate_scores(features: Dict[str, np.ndarray], pdf: pd.DataFrame, all_dom
             score += features[feature].astype(np.float32) * weight
 
     heuristic_quality_score = np.zeros(n_urls, dtype=np.float32)
-    
+
     is_readable_domain = (features['domain_entropy'] < 3.3) & \
                          (~features['domain_is_numeric_heavy']) & \
                          (~features['domain_hyphen_heavy'])
-    
+
     heuristic_quality_score += is_readable_domain * 0.25
-    
+
     path_depth = features['path_depth']
     is_article_path = features['path_has_article_slug'] | features['path_has_date'] | features['path_is_descriptive']
-    
+
     path_score = np.zeros(n_urls, dtype=np.float32)
-    
+
     bonus_for_good_path = is_readable_domain & is_article_path
     path_score += bonus_for_good_path * 0.6
-    
-    path_depth_bonus = np.clip(path_depth, 2, 6) - 2 
+
+    path_depth_bonus = np.clip(path_depth, 2, 6) - 2
     path_score += (bonus_for_good_path * path_depth_bonus * 0.1)
 
     path_score -= (path_depth > 10) * 1.0
@@ -234,7 +234,7 @@ def calculate_scores(features: Dict[str, np.ndarray], pdf: pd.DataFrame, all_dom
 
     path_entropy = features.get('path_entropy', np.zeros(n_urls))
     score -= np.clip((path_entropy - 4.2) * 0.5, 0, None)
-    
+
     readability = np.clip(features.get('vowel_consonant_ratio', np.ones(n_urls)) * 0.25, -0.25, 0.25)
     score += readability
 
