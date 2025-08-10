@@ -3,29 +3,31 @@ import sys
 import json
 from collections import defaultdict
 import time
+from functools import partial
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pandas as pd
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit, from_unixtime, current_timestamp, broadcast as spark_broadcast
+from pyspark.sql.functions import col, lit, from_unixtime, current_timestamp
 from pyspark.sql.types import (StringType, StructField, StructType, LongType)
 from pyspark import StorageLevel
-from spark_logic.score_urls import score_urls_batch
+from spark_logic.score import score_urls
 from writers.parquet_writer import write_to_parquet
 from writers.summary_writer import write_summary
 from writers.good_data_handler import handle_good_data
 from writers.domain_processor import create_domain_ranker, aggregate_domain_stats_vectorized
 from spark.config.spark_config import SparkConfig, get_spark_session
 from schema import PROCESSED_URL_SCHEMA
+from models.code.lightgbm import URLArchivalClassifier
 from testing.profiler_integration import (
     get_active_profiler,
     profile_spark_stage,
     log_spark_dataframe_operation,
     log_file_operation,
-    log_database_operation,
     log_memory_checkpoint
 )
+
 
 def execute_with_job_name(spark, job_name, action_func):
     print(f"\n=== EXECUTING: {job_name} ===")
@@ -36,7 +38,8 @@ def execute_with_job_name(spark, job_name, action_func):
     print(f"=== COMPLETED: {job_name} in {duration:.2f}s ===\n")
     return result
 
-def process_pandas_partition_optimized(iterator):
+
+def process_pandas_partition_optimized(iterator, model_path: str):
     domain_ranker = create_domain_ranker()
     all_domain_reputations = domain_ranker.get_all_domain_reputations() if SparkConfig.READ_REPUTATION else {}
 
@@ -49,7 +52,7 @@ def process_pandas_partition_optimized(iterator):
             continue
 
         try:
-            results_df = score_urls_batch(pandas_df, all_domain_reputations)
+            results_df = score_urls(pandas_df, all_domain_reputations, model_path)
             results_df = validate_and_clean_results(results_df)
 
             if results_df.empty:
@@ -57,7 +60,8 @@ def process_pandas_partition_optimized(iterator):
 
             batch_updates = aggregate_domain_stats_vectorized(results_df)
             for domain, stats in batch_updates.items():
-                partition_domain_updates[domain]['reputation_score'] += stats['reputation_score'] * stats['total_urls']
+                partition_domain_updates[domain]['reputation_score'] += stats['reputation_score'] * stats[
+                    'total_urls']
                 partition_domain_updates[domain]['total_urls'] += stats['total_urls']
                 partition_domain_updates[domain]['malicious_urls'] += stats['malicious_urls']
                 partition_domain_updates[domain]['benign_urls'] += stats['benign_urls']
@@ -65,7 +69,7 @@ def process_pandas_partition_optimized(iterator):
             yield results_df
 
         except Exception as e:
-            print(f"ERROR: Failed to process partition, creating fallback: {e}")
+            print(f"ERROR: Failed to process partition for model {model_path}, creating fallback: {e}")
             try:
                 fallback_df = pd.DataFrame(index=pandas_df.index)
                 current_time = pd.Timestamp.now()
@@ -74,7 +78,8 @@ def process_pandas_partition_optimized(iterator):
                 fallback_df['domain'] = 'unknown.invalid'
                 fallback_df['path'] = ''
                 fallback_df['query'] = ''
-                fallback_df['timestamp'] = pd.to_datetime(pandas_df.get('timestamp'), errors='coerce').fillna(current_time)
+                fallback_df['timestamp'] = pd.to_datetime(pandas_df.get('timestamp'), errors='coerce').fillna(
+                    current_time)
                 fallback_df['score'] = -2.0
                 fallback_df['is_spam'] = True
                 fallback_df['domain_reputation_score'] = 0.0
@@ -107,6 +112,7 @@ def process_pandas_partition_optimized(iterator):
 
     save_domain_updates(partition_domain_updates)
 
+
 def validate_and_clean_results(results_df):
     try:
         current_time = pd.Timestamp.now()
@@ -121,11 +127,11 @@ def validate_and_clean_results(results_df):
 
         output_df = results_df[[field.name for field in PROCESSED_URL_SCHEMA]]
 
-        for col in output_df.columns:
-            if output_df[col].dtype == 'object':
-                output_df[col] = output_df[col].astype(str)
-                output_df[col] = output_df[col].str.slice(0, 1000)
-                output_df[col] = output_df[col].replace('nan', None)
+        for col_name in output_df.columns:
+            if output_df[col_name].dtype == 'object':
+                output_df[col_name] = output_df[col_name].astype(str)
+                output_df[col_name] = output_df[col_name].str.slice(0, 1000)
+                output_df[col_name] = output_df[col_name].replace('nan', None)
 
         if not pd.api.types.is_datetime64_any_dtype(output_df["timestamp"]):
             output_df["timestamp"] = pd.to_datetime(output_df["timestamp"], errors='coerce', utc=True)
@@ -141,6 +147,7 @@ def validate_and_clean_results(results_df):
     except Exception as e:
         print(f"ERROR: Failed to validate results: {e}")
         return pd.DataFrame()
+
 
 def save_domain_updates(partition_domain_updates):
     for domain, stats in partition_domain_updates.items():
@@ -160,6 +167,7 @@ def save_domain_updates(partition_domain_updates):
         except Exception as e:
             print(f"Failed to write domain updates: {e}")
 
+
 def create_efficient_good_data(spark):
     good_df = handle_good_data(spark)
     if not good_df:
@@ -175,6 +183,7 @@ def create_efficient_good_data(spark):
 
     return good_df
 
+
 def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
     if not os.path.exists(input_path):
         print(f"ERROR: Input file does not exist: {input_path}")
@@ -185,145 +194,107 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
     try:
         with profile_spark_stage(profiler, "tsv_data_loading"):
             print(f"Loading TSV data from: {input_path}")
-            try:
-                if profiler and os.path.exists(input_path):
-                    file_size = os.path.getsize(input_path)
-                    log_file_operation(profiler, "read", input_path, file_size)
+            df_raw = (spark.read
+                      .option("delimiter", "\t")
+                      .option("multiline", "false")
+                      .option("escape", "")
+                      .option("quote", "")
+                      .schema(StructType([
+                          StructField("timestamp", LongType(), True),
+                          StructField("url", StringType(), True)
+                      ]))
+                      .csv(input_path, header=False))
 
-                df_raw = (spark.read
-                          .option("delimiter", "\t")
-                          .option("multiline", "false")
-                          .option("escape", "")
-                          .option("quote", "")
-                          .schema(StructType([
-                              StructField("timestamp", LongType(), True),
-                              StructField("url", StringType(), True)
-                          ]))
-                          .csv(input_path, header=False))
-
-                df_raw = df_raw.withColumn("timestamp", from_unixtime(col("timestamp")))
-                df_raw = df_raw.withColumn("data_source", lit("input_data"))
-
-                print("Applying initial filtering and deduplication...")
-
-                raw_count = execute_with_job_name(spark, "STEP_1_LOAD_AND_DEDUPE",
-                                                  lambda: df_raw.count())
-
-                print(f"Loaded {raw_count} records from TSV")
-
-                if profiler:
-                    log_spark_dataframe_operation(profiler, "raw_data_load", raw_count, spark.sparkContext.defaultParallelism)
-
-            except Exception as e:
-                print(f"ERROR: Failed to read TSV file: {e}")
-                raise
+            df_raw = df_raw.withColumn("timestamp", from_unixtime(col("timestamp")))
+            df_raw = df_raw.withColumn("data_source", lit("input_data"))
+            raw_count = df_raw.count()
+            print(f"Loaded {raw_count} records from TSV")
 
         if SparkConfig.USE_GOOD_DATA:
             print("Creating filtered good data...")
             good_df = create_efficient_good_data(spark)
-
             if good_df:
-                good_count = execute_with_job_name(spark, "STEP_2_GOOD_DATA_COUNT",
-                                                  lambda: good_df.count())
-                print(f"Created {good_count} good data records")
-
                 good_df_for_union = good_df.select("url", "timestamp", "data_source")
-
-                good_df_filtered = good_df_for_union.join(
-                    df_raw.select("url"),
-                    on="url",
-                    how="left_anti"
-                )
-
-                df_raw = df_raw.unionByName(good_df_filtered)
-                df_raw = df_raw.dropDuplicates(["url"])
-
-                union_count = execute_with_job_name(spark, "STEP_3_UNION_COUNT",
-                                                    lambda: df_raw.count())
-
+                df_raw = df_raw.unionByName(good_df_for_union).dropDuplicates(["url"])
+                union_count = df_raw.count()
                 print(f"After union with good data: {union_count} total records")
 
-                if profiler:
-                    log_spark_dataframe_operation(profiler, "union_with_good_data", union_count)
+        df_raw.persist(StorageLevel.MEMORY_AND_DISK)
 
-        df_raw = df_raw.repartition(spark.sparkContext.defaultParallelism)
+        base_training_df = df_raw
 
-        with profile_spark_stage(profiler, "url_scoring_processing"):
-            print("Processing URLs with scoring...")
-            try:
+        for model_path in SparkConfig.USE_PATHS:
+            model_name = os.path.splitext(os.path.basename(model_path))[0]
+            model_output_path = os.path.join(output_path, model_name)
+            os.makedirs(model_output_path, exist_ok=True)
+
+            print("\n" + "="*80)
+            print(f"PROCESSING WITH MODEL: {model_name}")
+            print(f"Output Path: {model_output_path}")
+            print("="*80 + "\n")
+
+            with profile_spark_stage(profiler, f"url_scoring_processing_{model_name}"):
+                print(f"Processing URLs with scoring model: {model_name}...")
+
+                process_partition_with_model = partial(process_pandas_partition_optimized, model_path=model_path)
+
                 processed_df = df_raw.mapInPandas(
-                    lambda iterator: process_pandas_partition_optimized(iterator),
+                    process_partition_with_model,
                     schema=PROCESSED_URL_SCHEMA
                 )
 
-                processed_df = processed_df.coalesce(12)
                 processed_df.persist(StorageLevel.MEMORY_AND_DISK)
-
-                processed_count = execute_with_job_name(spark, "STEP_4_URL_SCORING",
+                processed_count = execute_with_job_name(spark, f"STEP_4_URL_SCORING_{model_name}",
                                                         lambda: processed_df.count())
+                print(f"Processed and scored {processed_count} URLs with {model_name}")
 
-                print(f"Processed and scored {processed_count} URLs")
+            try:
+                if SparkConfig.WRITE_PARQUET:
+                    execute_with_job_name(spark, f"STEP_5A_WRITE_PARQUET_{model_name}",
+                                          lambda: write_to_parquet(processed_df, model_output_path))
 
-                if profiler:
-                    log_spark_dataframe_operation(profiler, "url_scoring_processing", processed_count)
+                if SparkConfig.WRITE_SUMMARY:
+                    execute_with_job_name(spark, f"STEP_5C_WRITE_SUMMARY_{model_name}",
+                                          lambda: write_summary(processed_df, model_output_path))
 
-                print("Deduplicating final results before writing...")
-                post_dedupe_df = processed_df.dropDuplicates(["url", "data_source"])
-                post_dedupe_df.persist(StorageLevel.MEMORY_AND_DISK)
+                if SparkConfig.WRITE_DB:
+                    print(f"Warning: Writing to DB for model {model_name}. If multiple models are used, this may overwrite data.")
+                    from writers.database_writer import write_to_database
+                    execute_with_job_name(spark, f"STEP_5B_WRITE_DATABASE_{model_name}",
+                                          lambda: write_to_database(processed_df))
 
-                post_dedupe_count = execute_with_job_name(spark, "STEP_4A_POST_DEDUPE", lambda: post_dedupe_df.count())
-                if processed_count > 0:
-                    print(f"Removed {processed_count - post_dedupe_count} duplicates created during processing. Total after dedupe: {post_dedupe_count}")
-
+            finally:
                 processed_df.unpersist()
-                processed_df = post_dedupe_df
 
-                if profiler:
-                    log_spark_dataframe_operation(profiler, "post_processing_deduplication", post_dedupe_count)
-                    log_memory_checkpoint(profiler, "after_url_scoring")
+        df_raw.unpersist()
 
-            except Exception as e:
-                print(f"ERROR: Failed to process URLs: {e}")
-                raise
+        if SparkConfig.TRAIN_MODEL:
+            print(f"\n=== EXECUTING: In-Memory Model Training ===")
 
-        try:
-            if SparkConfig.WRITE_PARQUET:
-                with profile_spark_stage(profiler, "parquet_output"):
-                    try:
-                        execute_with_job_name(spark, "STEP_5A_WRITE_PARQUET",
-                                              lambda: write_to_parquet(processed_df, output_path))
-                    except Exception as e:
-                        print(f"ERROR: Failed to write parquet file: {e}")
-                        raise
+            classical_model_path = next((p for p in SparkConfig.USE_PATHS if "score_urls" in p), None)
+            if not classical_model_path:
+                 print("WARNING: Could not find classical model ('score_urls.py') in USE_PATHS. Skipping model training.")
             else:
-                print("Skipping parquet output (WRITE_PARQUET=False)")
+                print(f"Generating training labels using '{classical_model_path}'...")
 
-            if SparkConfig.WRITE_DB:
-                with profile_spark_stage(profiler, "database_output"):
-                    try:
-                        from writers.database_writer import write_to_database
-                        execute_with_job_name(spark, "STEP_5B_WRITE_DATABASE",
-                                              lambda: write_to_database(processed_df))
-                        print("Database write completed successfully")
-                    except Exception as e:
-                        print(f"ERROR: Failed to write to database: {e}")
-                        raise
-            else:
-                print("Skipping database output (WRITE_DB=False)")
+                process_partition_for_training = partial(process_pandas_partition_optimized, model_path=classical_model_path)
+                training_label_df = base_training_df.mapInPandas(process_partition_for_training, schema=PROCESSED_URL_SCHEMA)
+                training_label_df.persist(StorageLevel.MEMORY_AND_DISK)
 
-            if SparkConfig.WRITE_SUMMARY:
-                with profile_spark_stage(profiler, "summary_generation"):
-                    try:
-                        execute_with_job_name(spark, "STEP_5C_WRITE_SUMMARY",
-                                              lambda: write_summary(processed_df, output_path))
-                        print("Summary generation completed")
-                    except Exception as e:
-                        print(f"WARNING: Summary generation failed: {e}")
-            else:
-                print("Skipping summary generation (WRITE_SUMMARY=False)")
+                try:
+                    print("Collecting data for training... This may take a moment.")
+                    training_pd = training_label_df.select("url", "is_spam", "data_source").toPandas()
+                    print(f"Collected {len(training_pd)} records into memory for training.")
 
-        finally:
-            processed_df.unpersist()
+                    classifier = URLArchivalClassifier()
+                    classifier.train(training_pd)
+
+                except Exception as e:
+                    print(f"FATAL ERROR during in-memory model training step: {e}")
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    training_label_df.unpersist()
 
         print("Processing completed successfully")
         return True
@@ -333,6 +304,7 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
         import traceback
         traceback.print_exc()
         raise
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -362,5 +334,3 @@ if __name__ == "__main__":
                 spark_session.stop()
             except Exception as e:
                 print(f"WARNING: Failed to stop Spark session: {e}")
-
-    print("Script completed successfully")
