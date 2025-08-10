@@ -15,3 +15,4 @@ indexnow/data
 *.tsv
 artifacts
 labs
+.joblib
