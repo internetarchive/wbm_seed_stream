@@ -9,7 +9,7 @@ class SparkConfig:
     WRITE_REPUTATION = True
 
     WRITE_DB = False
-    WRITE_PARQUET = True
+    WRITE_PARQUET = False
     WRITE_TSV = False
 
     WRITE_SUMMARY = True
@@ -17,12 +17,13 @@ class SparkConfig:
 
     # ----------------
     USE_METHODS = ["classical", "lightgbm.py"]
+    # USE_METHODS = ["lightgbm.py"]
     TRAIN_MODEL = False
     # ----------------
 
     SUBPROCESS_TIMEOUT = 18000
     WIKI_DAYS = 0
-    MEDIACLOUD_DAYS = 1
+    MEDIACLOUD_DAYS = 5
 
     SPARK_ZIP_PATH = "spark_modules.zip"
     SPARK_JOB_PATH = "spark_logic/process_urls.py"

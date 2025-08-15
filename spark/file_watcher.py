@@ -89,10 +89,9 @@ class FileWatcher:
 
         job_input_dir = os.path.join(job_output_base_dir, "input")
         job_output_root_dir = os.path.join(job_output_base_dir, "output")
-        job_output_parquet_dir = os.path.join(job_output_root_dir, "parquet")
 
         os.makedirs(job_input_dir, exist_ok=True)
-        os.makedirs(job_output_parquet_dir, exist_ok=True)
+        os.makedirs(job_output_root_dir, exist_ok=True)
 
         job_output_tsv_dir = None
         if SparkConfig.WRITE_TSV:
@@ -103,7 +102,7 @@ class FileWatcher:
         shutil.move(original_input_file_path, current_input_file_path)
         profiler.log_process_event("file_setup", f"File moved to job directory: {input_filename}")
 
-        spark_output_path = job_output_parquet_dir
+        spark_output_path = job_output_root_dir
 
         if not os.path.exists(SparkConfig.SPARK_JOB_PATH):
             return
@@ -153,7 +152,7 @@ class FileWatcher:
 
             profiler.log_process_event("spark_job_end", f"Spark job completed for {input_filename}")
 
-            if SparkConfig.WRITE_TSV and job_output_tsv_dir:
+            if SparkConfig.WRITE_TSV and SparkConfig.WRITE_PARQUET and job_output_tsv_dir:
                 profiler.log_process_event("tsv_conversion_start", "Starting parquet to TSV conversion")
                 tsv_output_file_path = os.path.join(job_output_tsv_dir, "data.tsv")
                 convert_parquet_to_tsv(spark_output_path, tsv_output_file_path)
