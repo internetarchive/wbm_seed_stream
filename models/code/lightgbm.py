@@ -18,7 +18,7 @@ if PROJECT_ROOT not in sys.path:
 from spark.config.spark_config import SparkConfig
 from schema import PROCESSED_URL_SCHEMA
 
-MODEL_SAVE_PATH = os.path.join(PROJECT_ROOT, 'models', 'trained', 'url_archival_model_v2.joblib')
+MODEL_SAVE_PATH = os.path.join(PROJECT_ROOT, 'models', 'trained', 'url_archival_model.joblib')
 LISTS_DIR = os.path.join(PROJECT_ROOT, 'data', 'storage', 'lists')
 CURRENT_TIMESTAMP = pd.Timestamp.now()
 MAX_URL_LENGTH = 2048
@@ -56,15 +56,12 @@ IP_ADDRESS_PATTERN = re.compile(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$')
 CONTENT_PATTERNS = {
     'contains_download': re.compile(r'\b(download|exe|zip|rar|torrent|crack|keygen|apk)\b', re.IGNORECASE),
     'contains_phishing': re.compile(r'\b(login|signin|account|verify|suspended|update|confirm|secure|password)\b', re.IGNORECASE),
-    'contains_financial': re.compile(r'\b(bank|paypal|amazon|ebay|visa|mastercard|credit|card|payment)\b', re.IGNORECASE),
-    'contains_urgency': re.compile(r'\b(urgent|immediate|expire|limited|act now|hurry|last chance)\b', re.IGNORECASE),
     'is_media_or_api': re.compile(r'\b(api|json|xml|v[1-9]/|/media/)\b', re.IGNORECASE),
-    'path_contains_sensitive': re.compile(r'/(login|admin|credentials|wp-admin|config|backup)\b', re.IGNORECASE),
 }
 SUSPICIOUS_TLDS = frozenset({'.tk', '.ml', '.ga', '.cf', '.gq', '.ru', '.cn', '.cc', '.info', '.biz', '.xyz', '.top'})
 TRUSTWORTHY_TLDS = frozenset({'.gov', '.edu', '.mil'})
 
-@lru_cache(maxsize=4096)
+@lru_cache(maxsize=2048)
 def get_shannon_entropy(text: str) -> float:
     if not text or len(text) <= 1: return 0.0
     counts = Counter(text)
@@ -102,69 +99,44 @@ def extract_features_vectorized(pdf: pd.DataFrame) -> pd.DataFrame:
     features['len_query'] = queries.str.len()
     features['len_domain'] = domains.str.len()
 
-    features['is_very_short_url'] = (features['len_url'] <= 15).astype(int)
-    features['is_very_long_url'] = (features['len_url'] > 1024).astype(int)
-
     tlds = domains.str.rsplit('.', n=1, expand=True)[1].fillna('')
     features['is_suspicious_tld'] = tlds.isin(SUSPICIOUS_TLDS).astype(int)
     features['is_trustworthy_tld'] = tlds.isin(TRUSTWORTHY_TLDS).astype(int)
 
     features['has_ip_address'] = domains.str.match(IP_ADDRESS_PATTERN).astype(int)
-    features['num_subdomains'] = domains.str.count(r'\.')
-    features['has_excessive_subdomains'] = (features['num_subdomains'] > 4).astype(int)
+    features['num_subdomains'] = domains.str.count(r'\.').astype(int)
+    features['num_path_dirs'] = paths.str.count('/').astype(int)
     
-    features['num_path_dirs'] = paths.str.count('/')
-    features['is_root_path'] = (paths.isin(['/', ''])).astype(int)
-
     non_empty_queries = queries != ''
     features['num_params'] = (queries.str.count('&').fillna(0) + non_empty_queries).astype(int)
-    features['has_excessive_params'] = (features['num_params'] > 9).astype(int)
     
-    features['num_digits_domain'] = domains.str.count(r'\d')
-    features['digit_ratio_domain'] = (features['num_digits_domain'] / np.maximum(features['len_domain'], 1)).astype(np.float32)
-    features['domain_is_numeric_heavy'] = (features['digit_ratio_domain'] > 0.4).astype(int)
-
-    features['num_hyphens_domain'] = domains.str.count('-')
-    features['domain_hyphen_heavy'] = (features['num_hyphens_domain'] > 2).astype(int)
-    
-    features['has_suspicious_chars_path'] = (paths.str.count(r'[^\w\s/.-]') > 3).astype(int)
-    features['has_excessive_encoding'] = (urls.str.count('%') > 5).astype(int)
-    features['path_keyword_stuffing'] = (features['num_path_dirs'] > 10) & (paths.str.count('-') > 10)
+    features['num_digits_domain'] = domains.str.count(r'\d').astype(int)
+    features['num_hyphens_domain'] = domains.str.count('-').astype(int)
 
     for name, pattern in CONTENT_PATTERNS.items():
-        features[name] = path_query.str.contains(pattern, regex=True, na=False).astype(int)
+        features[name] = path_query.str.contains(pattern, regex=True).astype(int)
 
     features['domain_entropy'] = calculate_entropy_vectorized(domains)
     features['path_entropy'] = calculate_entropy_vectorized(paths)
 
-    vowel_counts = domains.str.count(r'[aeiou]')
-    consonant_counts = domains.str.count(r'[bcdfghjklmnpqrstvwxyz]')
+    vowel_counts = domains.str.count(r'[aeiou]').fillna(0)
+    consonant_counts = domains.str.count(r'[bcdfghjklmnpqrstvwxyz]').fillna(0)
     features['vowel_consonant_ratio'] = (vowel_counts / np.maximum(consonant_counts, 1)).astype(np.float32)
 
-    features['is_ugc_path'] = paths.str.contains(r'/(user|profile|c|channel|u)/', regex=True, na=False).astype(int)
-    features['path_has_article_slug'] = paths.str.contains(r'/[a-z0-9-]+-\d{4,}/?', na=False, regex=True).astype(int)
-    features['path_has_date'] = paths.str.contains(r'/20\d{2}/\d{1,2}/', na=False, regex=True).astype(int)
-    features['path_is_descriptive'] = ((paths.str.count('-') >= 2) & (features['len_path'] > 15)).astype(int)
-    
-    is_readable_domain = (features['domain_entropy'] < 3.3) & (~features['domain_is_numeric_heavy'].astype(bool)) & (~features['domain_hyphen_heavy'].astype(bool))
-    is_article_path = features['path_has_article_slug'].astype(bool) | features['path_has_date'].astype(bool) | features['path_is_descriptive'].astype(bool)
-    features['is_quality_article'] = (is_readable_domain & is_article_path).astype(int)
-
     if NSFW_PATTERN:
-        features['is_nsfw_content'] = path_query.str.contains(NSFW_PATTERN, regex=True, na=False).astype(int)
+        features['is_nsfw_content'] = path_query.str.contains(NSFW_PATTERN, regex=True).astype(int)
     else:
         features['is_nsfw_content'] = 0
         
     if SPAM_PATTERN:
-        features['is_spam_content'] = path_query.str.contains(SPAM_PATTERN, regex=True, na=False).astype(int)
+        features['is_spam_content'] = path_query.str.contains(SPAM_PATTERN, regex=True).astype(int)
     else:
         features['is_spam_content'] = 0
 
     features['is_nsfw_domain'] = domains.isin(NSFW_DOMAINS).astype(int)
     features['is_quality_domain'] = domains.isin(QUALITY_DOMAINS).astype(int)
     features['is_news_domain'] = domains.isin(NEWS_DOMAINS).astype(int)
-    
-    features.fillna(0, inplace=True)
+
     return features
 
 class URLArchivalClassifier:
@@ -194,9 +166,9 @@ class URLArchivalClassifier:
         label_counts = training_df['label'].value_counts()
         print(f"Dataset counts: Spam={label_counts.get(0, 0)}, Ham={label_counts.get(1, 0)}, Good={label_counts.get(2, 0)}")
 
-        if label_counts.get(2, 0) < 1000:
+        if label_counts.get(2, 0) == 0:
             print("=" * 60)
-            print(f"WARNING: Low count for 'good_data' ({label_counts.get(2, 0)}). Model may struggle to identify high-priority content. Recommend at least 1,000 samples.")
+            print("WARNING: No 'good_data' found. Model may not effectively identify high-priority content.")
             print("=" * 60)
 
         if label_counts.get(0, 0) < 100 or label_counts.get(1, 0) < 100:
@@ -216,30 +188,25 @@ class URLArchivalClassifier:
             objective='multiclass',
             num_class=self.num_classes,
             metric='multi_logloss',
-            n_estimators=1500,
-            learning_rate=0.03,
-            num_leaves=41,
-            max_depth=7,
-            n_jobs=-1,
+            n_estimators=1000,
+            learning_rate=0.05,
+            num_leaves=31,
+            n_jobs=12,
             random_state=42,
-            boosting_type='gbdt',
-            colsample_bytree=0.8,
-            subsample=0.8,
-            reg_alpha=0.1,
-            reg_lambda=0.1,
-            class_weight={0: 1.2, 1: 1, 2: 15.0}
+            boosting_type='goss',
+            force_col_wise=True,
+            class_weight='balanced'
         )
 
-        lgbm.fit(X, y, eval_set=[(X, y)], callbacks=[lgb.early_stopping(100, verbose=True)])
+        lgbm.fit(X, y, eval_set=[(X, y)], callbacks=[lgb.early_stopping(50, verbose=True)])
         self.model = lgbm
         self._save_model()
 
     def _calculate_scores(self, probs: np.ndarray, features_df: pd.DataFrame) -> Dict:
         p_spam, p_ham, p_good = probs[:, 0], probs[:, 1], probs[:, 2]
-        final_score = (1.5 * p_good) + (0.1 * p_ham) - (1.0 * p_spam)
         return {
-            'score': final_score,
-            'is_spam': p_spam > 0.6,
+            'score': p_ham + p_good,
+            'is_spam': p_spam > 0.5,
             'risk_score': p_spam,
             'trust_score': p_good,
             'composite_score': p_good - p_spam,
@@ -261,10 +228,6 @@ class URLArchivalClassifier:
         full_df = pd.concat([df_to_score.reset_index(drop=True), parsed_df.reset_index(drop=True)], axis=1)
 
         features_df = extract_features_vectorized(full_df)
-        
-        missing_cols = set(self.feature_names) - set(features_df.columns)
-        if missing_cols:
-            raise ValueError(f"The following features are missing from the prediction data: {missing_cols}")
         X_predict = features_df[self.feature_names]
 
         probabilities = self.model.predict_proba(X_predict)
