@@ -3,7 +3,7 @@ import sys
 import json
 from collections import defaultdict
 import time
-from functools import partial
+import traceback
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -12,9 +12,10 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit, from_unixtime, current_timestamp
 from pyspark.sql.types import (StringType, StructField, StructType, LongType)
 from pyspark import StorageLevel
-from spark_logic.score import score_urls
+from spark_logic.score_urls import score_urls_batch
 from writers.parquet_writer import write_to_parquet
 from writers.summary_writer import write_summary
+from spark_logic.create_summary import create_comparison_summary
 from writers.good_data_handler import handle_good_data
 from writers.domain_processor import create_domain_ranker, aggregate_domain_stats_vectorized
 from spark.config.spark_config import SparkConfig, get_spark_session
@@ -23,11 +24,10 @@ from models.code.lightgbm import URLArchivalClassifier
 from testing.profiler_integration import (
     get_active_profiler,
     profile_spark_stage,
-    log_spark_dataframe_operation,
-    log_file_operation,
-    log_memory_checkpoint
 )
 
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+MODEL_PATH = os.path.join(PROJECT_ROOT, 'models', 'trained', 'url_archival_model.joblib')
 
 def execute_with_job_name(spark, job_name, action_func):
     print(f"\n=== EXECUTING: {job_name} ===")
@@ -39,7 +39,7 @@ def execute_with_job_name(spark, job_name, action_func):
     return result
 
 
-def process_pandas_partition_optimized(iterator, model_path: str):
+def process_pandas_partition_classical(iterator):
     domain_ranker = create_domain_ranker()
     all_domain_reputations = domain_ranker.get_all_domain_reputations() if SparkConfig.READ_REPUTATION else {}
 
@@ -52,7 +52,7 @@ def process_pandas_partition_optimized(iterator, model_path: str):
             continue
 
         try:
-            results_df = score_urls(pandas_df, all_domain_reputations, model_path)
+            results_df = score_urls_batch(pandas_df, all_domain_reputations)
             results_df = validate_and_clean_results(results_df)
 
             if results_df.empty:
@@ -69,7 +69,7 @@ def process_pandas_partition_optimized(iterator, model_path: str):
             yield results_df
 
         except Exception as e:
-            print(f"ERROR: Failed to process partition for model {model_path}, creating fallback: {e}")
+            print(f"ERROR: Failed to process partition with classical method, creating fallback: {e}")
             try:
                 fallback_df = pd.DataFrame(index=pandas_df.index)
                 current_time = pd.Timestamp.now()
@@ -111,6 +111,58 @@ def process_pandas_partition_optimized(iterator, model_path: str):
                 yield pd.DataFrame(columns=[field.name for field in PROCESSED_URL_SCHEMA])
 
     save_domain_updates(partition_domain_updates)
+
+
+def process_pandas_partition_lightgbm(iterator):
+    classifier = URLArchivalClassifier(model_path=os.path.basename(MODEL_PATH))
+    for pandas_df in iterator:
+        if pandas_df is None or pandas_df.empty:
+            continue
+        try:
+            results_df = classifier.predict(pandas_df)
+            yield validate_and_clean_results(results_df)
+        except Exception as e:
+            print(f"ERROR: Failed to process partition with lightgbm, creating fallback. Exception: {e}")
+            traceback.print_exc()
+            try:
+                fallback_df = pd.DataFrame(index=pandas_df.index)
+                current_time = pd.Timestamp.now()
+
+                fallback_df['url'] = pandas_df.get('url', '').fillna('invalid_url').astype(str)
+                fallback_df['domain'] = 'unknown.invalid'
+                fallback_df['path'] = ''
+                fallback_df['query'] = ''
+                fallback_df['timestamp'] = pd.to_datetime(pandas_df.get('timestamp'), errors='coerce').fillna(
+                    current_time)
+                fallback_df['score'] = -3.0
+                fallback_df['is_spam'] = True
+                fallback_df['domain_reputation_score'] = 0.0
+                fallback_df['risk_score'] = 3.0
+                fallback_df['trust_score'] = 0.0
+                fallback_df['composite_score'] = -3.0
+                fallback_df['entropy_score'] = 0.0
+                fallback_df['readability_score'] = 0.0
+                fallback_df['confidence'] = 0.1
+                fallback_df['domain_frequency'] = 1
+                fallback_df['domain_frequency_pct'] = 1.0 / len(pandas_df) if len(pandas_df) > 0 else 1.0
+                fallback_df['url_hash'] = fallback_df['url'].apply(lambda x: str(hash(x))[:16])
+                fallback_df['time_delta'] = 0.0
+                fallback_df['received_at'] = current_time
+                fallback_df['meta'] = None
+
+                for field in PROCESSED_URL_SCHEMA:
+                    if field.name not in fallback_df.columns:
+                        if field.name == "data_source":
+                            fallback_df[field.name] = "input_data"
+                        else:
+                            fallback_df[field.name] = None
+
+                ordered_cols = [field.name for field in PROCESSED_URL_SCHEMA if field.name in fallback_df.columns]
+                yield fallback_df[ordered_cols]
+
+            except Exception as fallback_error:
+                print(f"ERROR: Fallback creation failed for lightgbm: {fallback_error}")
+                yield pd.DataFrame(columns=[field.name for field in PROCESSED_URL_SCHEMA])
 
 
 def validate_and_clean_results(results_df):
@@ -183,7 +235,6 @@ def create_efficient_good_data(spark):
 
     return good_df
 
-
 def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
     if not os.path.exists(input_path):
         print(f"ERROR: Input file does not exist: {input_path}")
@@ -223,39 +274,45 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
 
         base_training_df = df_raw
 
-        for model_path in SparkConfig.USE_PATHS:
-            model_name = os.path.splitext(os.path.basename(model_path))[0]
-            model_output_path = os.path.join(output_path, model_name)
-            os.makedirs(model_output_path, exist_ok=True)
-
+        for method in SparkConfig.USE_METHODS:
+            model_name = method.replace(".py", "")
+            model_base_output_path = os.path.join(output_path, model_name)
+            
             print("\n" + "="*80)
-            print(f"PROCESSING WITH MODEL: {model_name}")
-            print(f"Output Path: {model_output_path}")
+            print(f"PROCESSING WITH METHOD: {model_name}")
+            print(f"Output Path: {model_base_output_path}")
             print("="*80 + "\n")
 
             with profile_spark_stage(profiler, f"url_scoring_processing_{model_name}"):
-                print(f"Processing URLs with scoring model: {model_name}...")
+                print(f"Processing URLs with scoring method: {model_name}...")
 
-                process_partition_with_model = partial(process_pandas_partition_optimized, model_path=model_path)
+                if method == "classical":
+                    process_partition_func = process_pandas_partition_classical
+                elif method == "lightgbm.py":
+                    process_partition_func = process_pandas_partition_lightgbm
+                else:
+                    print(f"WARNING: Unknown method '{method}' specified. Skipping.")
+                    continue
 
                 processed_df = df_raw.mapInPandas(
-                    process_partition_with_model,
+                    process_partition_func,
                     schema=PROCESSED_URL_SCHEMA
                 )
 
                 processed_df.persist(StorageLevel.MEMORY_AND_DISK)
-                processed_count = execute_with_job_name(spark, f"STEP_4_URL_SCORING_{model_name}",
-                                                        lambda: processed_df.count())
-                print(f"Processed and scored {processed_count} URLs with {model_name}")
 
             try:
                 if SparkConfig.WRITE_PARQUET:
+                    parquet_output_path = os.path.join(model_base_output_path, "parquet")
+                    os.makedirs(parquet_output_path, exist_ok=True)
                     execute_with_job_name(spark, f"STEP_5A_WRITE_PARQUET_{model_name}",
-                                          lambda: write_to_parquet(processed_df, model_output_path))
+                                          lambda: write_to_parquet(processed_df, parquet_output_path))
 
                 if SparkConfig.WRITE_SUMMARY:
+                    summary_output_path = os.path.join(model_base_output_path, "summary")
+                    os.makedirs(summary_output_path, exist_ok=True)
                     execute_with_job_name(spark, f"STEP_5C_WRITE_SUMMARY_{model_name}",
-                                          lambda: write_summary(processed_df, model_output_path))
+                                          lambda: write_summary(processed_df, summary_output_path))
 
                 if SparkConfig.WRITE_DB:
                     print(f"Warning: Writing to DB for model {model_name}. If multiple models are used, this may overwrite data.")
@@ -268,33 +325,64 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
 
         df_raw.unpersist()
 
-        if SparkConfig.TRAIN_MODEL:
-            print(f"\n=== EXECUTING: In-Memory Model Training ===")
+        methods_used = SparkConfig.USE_METHODS
+        if "classical" in methods_used and "lightgbm.py" in methods_used and not SparkConfig.TRAIN_MODEL and SparkConfig.WRITE_PARQUET:
+            print("\n" + "="*80)
+            print("GENERATING MODEL COMPARISON REPORT")
+            print("="*80 + "\n")
 
-            classical_model_path = next((p for p in SparkConfig.USE_PATHS if "score_urls" in p), None)
-            if not classical_model_path:
-                 print("WARNING: Could not find classical model ('score_urls.py') in USE_PATHS. Skipping model training.")
-            else:
-                print(f"Generating training labels using '{classical_model_path}'...")
-
-                process_partition_for_training = partial(process_pandas_partition_optimized, model_path=classical_model_path)
-                training_label_df = base_training_df.mapInPandas(process_partition_for_training, schema=PROCESSED_URL_SCHEMA)
-                training_label_df.persist(StorageLevel.MEMORY_AND_DISK)
-
+            def compare_models():
                 try:
-                    print("Collecting data for training... This may take a moment.")
-                    training_pd = training_label_df.select("url", "is_spam", "data_source").toPandas()
-                    print(f"Collected {len(training_pd)} records into memory for training.")
+                    classical_path = os.path.join(output_path, "classical", "parquet")
+                    lightgbm_path = os.path.join(output_path, "lightgbm", "parquet")
 
-                    classifier = URLArchivalClassifier()
-                    classifier.train(training_pd)
+                    df_classical = spark.read.parquet(classical_path)
+                    df_lightgbm = spark.read.parquet(lightgbm_path)
+
+                    df_classical_renamed = df_classical.select(
+                        col("url"),
+                        col("score").alias("score_classical"),
+                        col("is_spam").alias("is_spam_classical")
+                    )
+
+                    df_lightgbm_renamed = df_lightgbm.select(
+                        col("url"),
+                        col("score").alias("score_lightgbm"),
+                        col("is_spam").alias("is_spam_lightgbm")
+                    )
+
+                    comparison_df = df_classical_renamed.join(df_lightgbm_renamed, "url", "inner")
+
+                    create_comparison_summary(comparison_df, output_path)
 
                 except Exception as e:
-                    print(f"FATAL ERROR during in-memory model training step: {e}")
+                    print(f"ERROR: Could not generate model comparison report: {e}")
                     import traceback
                     traceback.print_exc()
-                finally:
-                    training_label_df.unpersist()
+
+            execute_with_job_name(spark, "STEP_6_MODEL_COMPARISON", compare_models)
+
+        if SparkConfig.TRAIN_MODEL and "lightgbm.py" in SparkConfig.USE_METHODS:
+            print(f"\n=== EXECUTING: In-Memory Model Training for LightGBM ===")
+
+            print("Generating training labels using 'classical' method...")
+            training_label_df = base_training_df.mapInPandas(process_pandas_partition_classical, schema=PROCESSED_URL_SCHEMA)
+            training_label_df.persist(StorageLevel.MEMORY_AND_DISK)
+
+            try:
+                print("Collecting data for training... This may take a moment.")
+                training_pd = training_label_df.select("url", "is_spam", "data_source").toPandas()
+                print(f"Collected {len(training_pd)} records into memory for training.")
+
+                classifier = URLArchivalClassifier(model_path=MODEL_PATH)
+                classifier.train(training_pd)
+
+            except Exception as e:
+                print(f"FATAL ERROR during in-memory model training step: {e}")
+                import traceback
+                traceback.print_exc()
+            finally:
+                training_label_df.unpersist()
 
         print("Processing completed successfully")
         return True
@@ -319,6 +407,19 @@ if __name__ == "__main__":
     spark_session = None
     try:
         spark_session = get_spark_session()
+        
+        if "lightgbm.py" in SparkConfig.USE_METHODS or SparkConfig.TRAIN_MODEL:
+            if os.path.exists(MODEL_PATH):
+                spark_session.sparkContext.addFile(MODEL_PATH)
+                print(f"Added model file to Spark context: {MODEL_PATH}")
+            else:
+                if not SparkConfig.TRAIN_MODEL:
+                    print(f"FATAL ERROR: LightGBM model not found at {MODEL_PATH} and TRAIN_MODEL is False.", file=sys.stderr)
+                    spark_session.stop()
+                    sys.exit(1)
+                else:
+                    print(f"WARNING: Model file not found at {MODEL_PATH}, but proceeding because TRAIN_MODEL is True.")
+
     except Exception as e:
         print(f"FATAL ERROR: Failed to get Spark session: {e}")
         sys.exit(1)

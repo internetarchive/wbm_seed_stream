@@ -9,8 +9,7 @@ from spark_logic.create_summary import create_summary
 def write_summary(processed_df: DataFrame, output_path: str):
     print("Generating comprehensive summary report...")
 
-    job_output_dir = os.path.dirname(output_path)
-    summary_path = create_summary(processed_df, output_path, job_output_dir)
+    summary_path = create_summary(processed_df, output_path, output_path)
 
     if summary_path:
         print(f"Summary report generated successfully: {summary_path}")
