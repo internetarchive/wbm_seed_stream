@@ -17,10 +17,10 @@ class SparkConfig:
 
     # ----------------
     USE_METHODS = ["classical", "lightgbm.py"]
-    TRAIN_MODEL = True
+    TRAIN_MODEL = False
     # ----------------
 
-    SUBPROCESS_TIMEOUT = 18000
+    SUBPROCESS_TIMEOUT = 72000
     WIKI_DAYS = 0
     MEDIACLOUD_DAYS = 5
 
