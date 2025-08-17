@@ -7,6 +7,9 @@ class SparkConfig:
     USE_GOOD_DATA = True
     READ_REPUTATION = True
     WRITE_REPUTATION = True
+    
+    USE_FEATURES = True
+    FEATURES_NUM = 5000 # maybe should be a percentage??
 
     WRITE_DB = False
     WRITE_PARQUET = False
@@ -14,15 +17,16 @@ class SparkConfig:
 
     WRITE_SUMMARY = True
     USE_LISTS = False
+    USE_FEATURES = False
 
     # ----------------
-    USE_METHODS = ["classical", "lightgbm.py"]
+    USE_METHODS = ["classical"]
     TRAIN_MODEL = False
     # ----------------
 
     SUBPROCESS_TIMEOUT = 72000
     WIKI_DAYS = 0
-    MEDIACLOUD_DAYS = 5
+    MEDIACLOUD_DAYS = 1
 
     SPARK_ZIP_PATH = "spark_modules.zip"
     SPARK_JOB_PATH = "spark_logic/process_urls.py"

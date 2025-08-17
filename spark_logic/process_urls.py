@@ -17,7 +17,7 @@ from writers.parquet_writer import write_to_parquet
 from writers.summary_writer import write_summary
 from spark_logic.create_summary import create_comparison_summary
 from writers.good_data_handler import handle_good_data
-from writers.domain_processor import create_domain_ranker, aggregate_domain_stats_vectorized
+from writers.domain_processor import create_domain_ranker, aggregate_domain_stats_vectorized, collect_domain_updates_from_temp_files, update_domain_reputations, cleanup_temp_files
 from spark.config.spark_config import SparkConfig, get_spark_session
 from schema import PROCESSED_URL_SCHEMA
 from models.code.lightgbm import URLArchivalRegressor
@@ -325,6 +325,30 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
                 traceback.print_exc()
             finally:
                 training_label_df.unpersist()
+        # Handle domain reputation updates if enabled
+        if SparkConfig.WRITE_REPUTATION:
+            try:
+                print("\n" + "="*80)
+                print("UPDATING DOMAIN REPUTATION DATABASE")
+                print("="*80 + "\n")
+                print("Collecting domain updates from temporary files...")
+                accumulated_updates = collect_domain_updates_from_temp_files()
+
+                if accumulated_updates:
+                    print(f"Found updates for {len(accumulated_updates)} domains")
+                    update_domain_reputations(accumulated_updates)
+                else:
+                    print("No domain updates found")
+
+                cleanup_temp_files()
+                print("Domain reputation update process completed")
+
+            except Exception as e:
+                print(f"WARNING: Failed to update domain reputations: {e}")
+                cleanup_temp_files()  # Still try to clean up temp files
+                import traceback
+                traceback.print_exc()
+
         print("Processing completed successfully")
         return True
     except Exception as e:
