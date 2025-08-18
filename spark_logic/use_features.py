@@ -33,6 +33,8 @@ ENHANCED_SCHEMA = StructType([
     StructField("redirect_count", IntegerType(), nullable=True),
     StructField("days_since_archive", IntegerType(), nullable=True),
     StructField("archive_count", IntegerType(), nullable=True),
+    StructField("etag", StringType(), nullable=True),
+    StructField("last_modified", StringType(), nullable=True),
 ])
 
 def enhance_url_features_batch(iterator: Iterator[pd.DataFrame]) -> Iterator[pd.DataFrame]:
@@ -123,6 +125,8 @@ def enhance_url_features_batch(iterator: Iterator[pd.DataFrame]) -> Iterator[pd.
                     'redirect_count': request_features.get('redirect_count'),
                     'days_since_archive': cdx_features.get('days_since_last_archive'),
                     'archive_count': cdx_features.get('archive_count'),
+                    'etag': request_features.get('etag'),
+                    'last_modified': request_features.get('last_modified'),
                 })
 
             except Exception as e:

@@ -9,6 +9,7 @@ from collections import Counter
 import math
 import joblib
 import lightgbm as lgb
+from sklearn.isotonic import IsotonicRegression
 from pyspark import SparkFiles
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -79,10 +80,10 @@ def parse_urls_vectorized(urls: pd.Series) -> pd.DataFrame:
     no_scheme_mask = ~urls_str.str.contains('://', na=False, regex=False)
     if no_scheme_mask.any():
         urls_str.loc[no_scheme_mask] = '//' + urls_str.loc[no_scheme_mask]
-    
+
     parts = urls_str.str.extract(URL_PARSE_REGEX)
     parts.rename(columns={'domain': 'domain', 'path': 'path', 'query': 'query'}, inplace=True)
-    
+
     parts['domain'] = parts['domain'].str.lower().fillna('unknown.invalid')
     parts['path'] = parts['path'].fillna('')
     parts['query'] = parts['query'].fillna('')
@@ -90,7 +91,7 @@ def parse_urls_vectorized(urls: pd.Series) -> pd.DataFrame:
 
 def extract_features_vectorized(pdf: pd.DataFrame) -> pd.DataFrame:
     features = pd.DataFrame(index=pdf.index)
-    
+
     urls = pdf['url'].fillna('')
     domains = pdf['domain'].fillna('')
     paths = pdf['path'].fillna('')
@@ -158,6 +159,7 @@ class URLArchivalRegressor:
     def __init__(self, model_path: str = MODEL_SAVE_PATH):
         self.model_path = model_path
         self.model: lgb.LGBMRegressor | None = None
+        self.isotonic_regressor: IsotonicRegression | None = None
         self.feature_names: List[str] | None = None
 
     def _prepare_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -206,10 +208,21 @@ class URLArchivalRegressor:
 
         lgbm.fit(X, y, eval_set=[(X, y)], callbacks=[lgb.early_stopping(100, verbose=True)])
         self.model = lgbm
+
+        print("Calibrating model with Isotonic Regression...")
+        calibration_preds = self.model.predict(X)
+        self.isotonic_regressor = IsotonicRegression(y_min=-5.0, y_max=2.0, out_of_bounds='clip')
+        self.isotonic_regressor.fit(calibration_preds, y)
+
+        print("Calibrating model with Isotonic Regression...")
+        calibration_preds = self.model.predict(X)
+        self.isotonic_regressor = IsotonicRegression(y_min=-5.0, y_max=2.0, out_of_bounds='clip')
+        self.isotonic_regressor.fit(calibration_preds, y)
+
         self._save_model()
 
     def _calculate_scores(self, predicted_scores: np.ndarray, features_df: pd.DataFrame) -> Dict:
-        risk_score = np.maximum(0, -predicted_scores) / 5.0 
+        risk_score = np.maximum(0, -predicted_scores) / 5.0
         trust_score = np.maximum(0, predicted_scores) / 2.0
         confidence = 1 / (1 + np.exp(-predicted_scores))
 
@@ -238,6 +251,15 @@ class URLArchivalRegressor:
             raise ValueError(f"The following features are missing from the prediction data: {missing_cols}")
         X_predict = features_df[self.feature_names]
         predicted_scores = self.model.predict(X_predict)
+
+        if self.isotonic_regressor:
+            print("Applying Isotonic Regression calibration...")
+            predicted_scores = self.isotonic_regressor.predict(predicted_scores)
+
+        if self.isotonic_regressor:
+            print("Applying Isotonic Regression calibration...")
+            predicted_scores = self.isotonic_regressor.predict(predicted_scores)
+
         calculated_scores = self._calculate_scores(predicted_scores, features_df)
         result_df = full_df.copy()
         for col, values in calculated_scores.items():
@@ -247,7 +269,7 @@ class URLArchivalRegressor:
         result_df['url'] = result_df['url'].str.slice(0, MAX_URL_LENGTH)
         result_df['received_at'] = CURRENT_TIMESTAMP
         result_df['domain_frequency'] = result_df['domain'].map(result_df['domain'].value_counts()).fillna(1).astype(int)
-        
+
         total_urls = len(result_df)
         if total_urls > 0:
             result_df['domain_frequency_pct'] = (result_df['domain_frequency'] / total_urls).astype(np.float32)
@@ -258,17 +280,21 @@ class URLArchivalRegressor:
         for col in schema_cols:
              if col not in result_df.columns:
                  result_df[col] = None
-        
+
         return result_df[[col for col in schema_cols if col in result_df.columns]]
 
     def _save_model(self):
-        if self.model and self.feature_names:
+        if self.model and self.feature_names and self.isotonic_regressor:
             print(f"Saving model to {self.model_path}...")
             os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
-            joblib.dump({'model': self.model, 'features': self.feature_names}, self.model_path)
+            joblib.dump({
+                'model': self.model,
+                'features': self.feature_names,
+                'isotonic_regressor': self.isotonic_regressor
+            }, self.model_path)
             print("Model saved successfully.")
         else:
-            print("Error: Model not trained. Cannot save.")
+            print("Error: Model not trained or calibrated. Cannot save.")
 
     def _load_model(self):
         if self.model is None:
@@ -279,8 +305,23 @@ class URLArchivalRegressor:
                     model_file_path = spark_model_path
                 else:
                     raise FileNotFoundError(f"Model file not found at '{self.model_path}' or in SparkFiles. Please ensure it is distributed to worker nodes.")
-            
+
             print(f"Loading pre-trained model from {model_file_path}...")
             data = joblib.load(model_file_path)
             self.model = data['model']
             self.feature_names = data['features']
+            self.isotonic_regressor = data.get('isotonic_regressor')
+            if self.isotonic_regressor is None:
+                print("Warning: Isotonic regressor not found in model file. Predictions will not be calibrated.")
+            self.isotonic_regressor = data.get('isotonic_regressor')
+            if self.isotonic_regressor is None:
+                print("Warning: Isotonic regressor not found in model file. Predictions will not be calibrated.")
+            self.isotonic_regressor = data.get('isotonic_regressor')
+            if self.isotonic_regressor is None:
+                print("Warning: Isotonic regressor not found in model file. Predictions will not be calibrated.")
+            self.isotonic_regressor = data.get('isotonic_regressor')
+            if self.isotonic_regressor is None:
+                print("Warning: Isotonic regressor not found in model file. Predictions will not be calibrated.")
+            self.isotonic_regressor = data.get('isotonic_regressor')
+            if self.isotonic_regressor is None:
+                print("Warning: Isotonic regressor not found in model file. Predictions will not be calibrated.")
