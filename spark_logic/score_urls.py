@@ -178,7 +178,7 @@ def calculate_anomaly_features(pdf: pd.DataFrame) -> Dict[str, np.ndarray]:
 
     return features
 
-def calculate_scores(features: Dict[str, np.ndarray], pdf: pd.DataFrame, all_domain_reputations: Dict[str, float], anomaly_features: Dict[str, np.ndarray]) -> tuple:
+def calculate_scores(features: Dict[str, np.ndarray], pdf: pd.DataFrame, domain_data: Dict[str, Dict], anomaly_features: Dict[str, np.ndarray]) -> tuple:
     n_urls = len(pdf)
     score = np.zeros(n_urls, dtype=np.float32)
 
@@ -238,8 +238,15 @@ def calculate_scores(features: Dict[str, np.ndarray], pdf: pd.DataFrame, all_dom
     readability = np.clip(features.get('vowel_consonant_ratio', np.ones(n_urls)) * 0.25, -0.25, 0.25)
     score += readability
 
-    domain_rep_scores = pdf['domain'].map(all_domain_reputations).fillna(0.0).astype(np.float32).values
-    score += domain_rep_scores * 0.2
+    domain_rep_map = {domain: data.get('reputation_score', 0.0) for domain, data in domain_data.items()}
+    domain_diversity_map = {domain: data.get('content_diversity_score', 0.0) for domain, data in domain_data.items()}
+
+    domain_rep_scores = pdf['domain'].map(domain_rep_map).fillna(0.0).astype(np.float32).values
+    domain_diversity_scores = pdf['domain'].map(domain_diversity_map).fillna(0.0).astype(np.float32).values
+
+    # Dynamic weight: reputation matters less for domains with diverse content.
+    domain_reputation_weight = 0.2 * (1 - np.clip(domain_diversity_scores, 0, 1))
+    score += domain_rep_scores * domain_reputation_weight
 
     if 'length_anomaly' in anomaly_features:
         score -= anomaly_features['length_anomaly'].astype(np.float32) * 0.2
@@ -257,7 +264,7 @@ def calculate_scores(features: Dict[str, np.ndarray], pdf: pd.DataFrame, all_dom
 
     return score, is_spam, risk_score_val, trust_score_val
 
-def score_urls_batch(pdf: pd.DataFrame, all_domain_reputations: Dict[str, float]) -> pd.DataFrame:
+def score_urls_batch(pdf: pd.DataFrame, domain_data: Dict[str, Dict]) -> pd.DataFrame:
     if pdf.empty:
         return pd.DataFrame()
 
@@ -270,7 +277,7 @@ def score_urls_batch(pdf: pd.DataFrame, all_domain_reputations: Dict[str, float]
 
     features = extract_features_vectorized(pdf_copy)
     anomaly_features = calculate_anomaly_features(pdf_copy)
-    final_score, is_spam, risk_score, trust_score = calculate_scores(features, pdf_copy, all_domain_reputations, anomaly_features)
+    final_score, is_spam, risk_score, trust_score = calculate_scores(features, pdf_copy, domain_data, anomaly_features)
 
     n_urls = len(pdf_copy)
     result_pdf = pd.DataFrame(index=pdf_copy.index)
@@ -280,7 +287,8 @@ def score_urls_batch(pdf: pd.DataFrame, all_domain_reputations: Dict[str, float]
     result_pdf['risk_score'] = risk_score
     result_pdf['trust_score'] = trust_score
     result_pdf['composite_score'] = trust_score - risk_score
-    result_pdf['domain_reputation_score'] = pdf_copy['domain'].map(all_domain_reputations).fillna(0.0).astype(np.float32).values
+    domain_rep_map = {domain: data.get('reputation_score', 0.0) for domain, data in domain_data.items()}
+    result_pdf['domain_reputation_score'] = pdf_copy['domain'].map(domain_rep_map).fillna(0.0).astype(np.float32).values
     result_pdf['entropy_score'] = features.get('domain_entropy', np.zeros(n_urls))
     result_pdf['readability_score'] = features.get('vowel_consonant_ratio', np.zeros(n_urls))
 

@@ -13,7 +13,7 @@ class URL(Base):
         Index('idx_urls_score', 'score'),
         Index('idx_urls_analysis_batch_id', 'analysis_batch_id'),
     )
-        
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     url = Column(Text, nullable=False)
     source = Column(String(32), nullable=False)
@@ -32,7 +32,7 @@ class DomainReputation(Base):
         Index('idx_domain_reputation_score', 'reputation_score'),
         Index('idx_domain_reputation_updated_at', 'updated_at'),
     )
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     domain = Column(String(255), nullable=False, unique=True, index=True)
     reputation_score = Column(Float, nullable=True, index=True)
@@ -42,3 +42,6 @@ class DomainReputation(Base):
     first_seen_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
     meta = Column(JSON)
+    content_volatility_score = Column(Float, nullable=True, default=0.0) # Score from 0.0 to 1.0
+    predicted_revisit_interval_hours = Column(Integer, nullable=True) # Interval in hours
+    content_diversity_score = Column(Float, nullable=True, default=0.0)

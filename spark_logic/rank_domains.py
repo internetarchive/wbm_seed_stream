@@ -17,9 +17,11 @@ class DomainRank:
     last_updated: str
     rank: int = 0
     category: str = "unknown"
+    content_diversity_score: float = 0.0
 
 class DomainRanker:
     CACHE_TTL_SECONDS = 300
+    EMA_ALPHA = 0.1
 
     def __init__(self):
         self._cache_lock = threading.Lock()
@@ -72,7 +74,7 @@ class DomainRanker:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT domain, reputation_score, total_urls_seen,
-                           malicious_urls_count, benign_urls_count, updated_at
+                           malicious_urls_count, benign_urls_count, updated_at, content_diversity_score
                     FROM domain_reputation
                     WHERE domain = %s
                 """, (domain,))
@@ -86,7 +88,8 @@ class DomainRanker:
                         malicious_urls_count=result[3],
                         benign_urls_count=result[4],
                         last_updated=result[5].isoformat() if result[5] else "",
-                        category=self._categorize_domain(result[1], result[2], result[3], result[4])
+                        category=self._categorize_domain(result[1], result[2], result[3], result[4]),
+                        content_diversity_score=result[6] or 0.0
                     )
                 return None
         finally:
@@ -100,7 +103,7 @@ class DomainRanker:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT domain, reputation_score, total_urls_seen,
-                           malicious_urls_count, benign_urls_count, updated_at
+                           malicious_urls_count, benign_urls_count, updated_at, content_diversity_score
                     FROM domain_reputation
                     WHERE total_urls_seen >= %s
                     ORDER BY reputation_score DESC, total_urls_seen DESC
@@ -118,7 +121,8 @@ class DomainRanker:
                         benign_urls_count=row[4],
                         last_updated=row[5].isoformat() if row[5] else "",
                         rank=i,
-                        category=self._categorize_domain(row[1], row[2], row[3], row[4])
+                        category=self._categorize_domain(row[1], row[2], row[3], row[4]),
+                        content_diversity_score=row[6] or 0.0
                     ))
 
                 if profiler:
@@ -135,7 +139,7 @@ class DomainRanker:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT domain, reputation_score, total_urls_seen,
-                           malicious_urls_count, benign_urls_count, updated_at
+                           malicious_urls_count, benign_urls_count, updated_at, content_diversity_score
                     FROM domain_reputation
                     WHERE total_urls_seen >= %s
                     ORDER BY reputation_score ASC, malicious_urls_count DESC
@@ -152,7 +156,8 @@ class DomainRanker:
                         benign_urls_count=row[4],
                         last_updated=row[5].isoformat() if row[5] else "",
                         rank=i,
-                        category=self._categorize_domain(row[1], row[2], row[3], row[4])
+                        category=self._categorize_domain(row[1], row[2], row[3], row[4]),
+                        content_diversity_score=row[6] or 0.0
                     ))
                 return results
         finally:
@@ -170,7 +175,7 @@ class DomainRanker:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT domain, reputation_score, total_urls_seen,
-                           malicious_urls_count, benign_urls_count, updated_at
+                           malicious_urls_count, benign_urls_count, updated_at, content_diversity_score
                     FROM domain_reputation
                     ORDER BY reputation_score DESC
                 """)
@@ -185,7 +190,8 @@ class DomainRanker:
                         benign_urls_count=row[4],
                         last_updated=row[5].isoformat() if row[5] else "",
                         rank=i,
-                        category=self._categorize_domain(row[1], row[2], row[3], row[4])
+                        category=self._categorize_domain(row[1], row[2], row[3], row[4]),
+                        content_diversity_score=row[6] or 0.0
                     ))
                 return results
         finally:
@@ -207,21 +213,32 @@ class DomainRanker:
                     data.get('reputation_score', 0.0),
                     data.get('total_urls', 0),
                     data.get('malicious_urls', 0),
-                    data.get('benign_urls', 0)
+                    data.get('benign_urls', 0),
+                    data.get('content_volatility_score', 0.0),
+                    data.get('predicted_revisit_interval_hours', 168),
+                    data.get('content_diversity_score', 0.0)
                 ) for domain, data in domain_aggregates.items()
             ]
 
             with conn.cursor() as cur:
-                execute_values(cur, """
-                    INSERT INTO domain_reputation (domain, reputation_score, total_urls_seen, malicious_urls_count, benign_urls_count)
+                # Note: Using f-string for alpha is safe here as it's a class constant, not user input.
+                sql = f"""
+                    INSERT INTO domain_reputation (
+                        domain, reputation_score, total_urls_seen, malicious_urls_count, benign_urls_count,
+                        content_volatility_score, predicted_revisit_interval_hours, content_diversity_score
+                    )
                     VALUES %s
                     ON CONFLICT (domain) DO UPDATE SET
-                        reputation_score = (domain_reputation.reputation_score * domain_reputation.total_urls_seen + EXCLUDED.reputation_score * EXCLUDED.total_urls_seen) / NULLIF(domain_reputation.total_urls_seen + EXCLUDED.total_urls_seen, 0),
+                        reputation_score = (domain_reputation.reputation_score * (1 - {self.EMA_ALPHA})) + (EXCLUDED.reputation_score * {self.EMA_ALPHA}),
                         total_urls_seen = domain_reputation.total_urls_seen + EXCLUDED.total_urls_seen,
                         malicious_urls_count = domain_reputation.malicious_urls_count + EXCLUDED.malicious_urls_count,
                         benign_urls_count = domain_reputation.benign_urls_count + EXCLUDED.benign_urls_count,
+                        content_volatility_score = COALESCE((domain_reputation.content_volatility_score * (1 - {self.EMA_ALPHA})) + (EXCLUDED.content_volatility_score * {self.EMA_ALPHA}), 0.0),
+                        predicted_revisit_interval_hours = EXCLUDED.predicted_revisit_interval_hours,
+                        content_diversity_score = COALESCE((domain_reputation.content_diversity_score * (1 - {self.EMA_ALPHA})) + (EXCLUDED.content_diversity_score * {self.EMA_ALPHA}), 0.0),
                         updated_at = NOW()
-                """, update_data)
+                """
+                execute_values(cur, sql, update_data)
             conn.commit()
             self._invalidate_cache()
 
