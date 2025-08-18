@@ -9,10 +9,12 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pandas as pd
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit, from_unixtime, current_timestamp
+from pyspark.sql.functions import col, lit, from_unixtime, current_timestamp, coalesce, broadcast, avg as spark_avg, count as spark_count, sum as spark_sum
 from pyspark.sql.types import (StringType, StructField, StructType, LongType)
 from pyspark import StorageLevel
 from spark_logic.score_urls import score_urls_batch
+from spark_logic.use_features import enhance_scores_with_features
+from spark_logic.rank_domains import DomainRanker
 from writers.parquet_writer import write_to_parquet
 from writers.summary_writer import write_summary
 from spark_logic.create_summary import create_comparison_summary
@@ -41,28 +43,12 @@ def execute_with_job_name(spark, job_name, action_func):
 def process_pandas_partition_classical(iterator):
     domain_ranker = create_domain_ranker()
     all_domain_reputations = domain_ranker.get_all_domain_reputations() if SparkConfig.READ_REPUTATION else {}
-    partition_domain_updates = defaultdict(lambda: {
-        'reputation_score': 0.0, 'total_urls': 0, 'malicious_urls': 0, 'benign_urls': 0
-    })
-
     for pandas_df in iterator:
         if pandas_df is None or pandas_df.empty:
             continue
         try:
             results_df = score_urls_batch(pandas_df, all_domain_reputations)
-            results_df = validate_and_clean_results(results_df)
-
-            if results_df.empty:
-                raise ValueError("Scoring and validation returned empty dataframe")
-
-            batch_updates = aggregate_domain_stats_vectorized(results_df)
-            for domain, stats in batch_updates.items():
-                partition_domain_updates[domain]['reputation_score'] += stats['reputation_score'] * stats[
-                    'total_urls']
-                partition_domain_updates[domain]['total_urls'] += stats['total_urls']
-                partition_domain_updates[domain]['malicious_urls'] += stats['malicious_urls']
-                partition_domain_updates[domain]['benign_urls'] += stats['benign_urls']
-            yield results_df
+            yield validate_and_clean_results(results_df)
         except Exception as e:
             print(f"ERROR: Failed to process partition with classical method, creating fallback: {e}")
             try:
@@ -100,7 +86,6 @@ def process_pandas_partition_classical(iterator):
             except Exception as fallback_error:
                 print(f"ERROR: Fallback creation failed: {fallback_error}")
                 yield pd.DataFrame(columns=[field.name for field in PROCESSED_URL_SCHEMA])
-    save_domain_updates(partition_domain_updates)
 
 def process_pandas_partition_lightgbm(iterator):
     regressor = URLArchivalRegressor(model_path=os.path.basename(MODEL_PATH))
@@ -180,21 +165,7 @@ def validate_and_clean_results(results_df):
         print(f"ERROR: Failed to validate results: {e}")
         return pd.DataFrame()
 
-def save_domain_updates(partition_domain_updates):
-    for domain, stats in partition_domain_updates.items():
-        if stats['total_urls'] > 0:
-            stats['reputation_score'] = stats['reputation_score'] / stats['total_urls']
 
-    if partition_domain_updates:
-        import tempfile
-        import os
-        temp_dir = tempfile.gettempdir()
-        temp_file = os.path.join(temp_dir, f"domain_updates_{os.getpid()}_{hash(str(partition_domain_updates))}.json")
-        try:
-            with open(temp_file, 'w') as f:
-                json.dump(dict(partition_domain_updates), f)
-        except Exception as e:
-            print(f"Failed to write domain updates: {e}")
 
 def create_efficient_good_data(spark):
     good_df = handle_good_data(spark)
@@ -255,11 +226,102 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
                 else:
                     print(f"WARNING: Unknown method '{method}' specified. Skipping.")
                     continue
-                processed_df = df_raw.mapInPandas(
+                # PASS 1: Provisional Scoring
+                provisional_df = df_raw.mapInPandas(
                     process_partition_func,
                     schema=PROCESSED_URL_SCHEMA
                 )
+                provisional_df.persist(StorageLevel.MEMORY_AND_DISK)
+
+                # AGGREGATE batch-wide stats
+                print("Aggregating batch-wide domain statistics...")
+                batch_domain_stats_df = provisional_df.groupBy("domain").agg(
+                    spark_avg("score").alias("batch_reputation_score"),
+                    spark_count("*").alias("batch_count"),
+                    spark_sum(col("is_spam").cast("integer")).alias("batch_malicious_urls")
+                )
+
+                # PASS 2: Rescore with batch-aware reputations
+                print("Rescoring URLs with batch-aware domain reputations...")
+
+                # The original score contribution from domain reputation was (domain_reputation_score * 0.2)
+                # We subtract the old contribution and add the new one.
+                processed_df = provisional_df.join(broadcast(batch_domain_stats_df), "domain", "left") \
+                    .withColumn(
+                        "final_score",
+                        col("score")
+                        - (col("domain_reputation_score") * 0.2)
+                        + (coalesce(col("batch_reputation_score"), lit(0.0)) * 0.2)
+                    ) \
+                    .withColumn("score", col("final_score")) \
+                    .withColumn("domain_reputation_score", coalesce(col("batch_reputation_score"), lit(0.0))) \
+                    .drop("batch_reputation_score", "batch_count", "batch_malicious_urls", "final_score")
+
                 processed_df.persist(StorageLevel.MEMORY_AND_DISK)
+                provisional_df.unpersist()
+
+                if SparkConfig.USE_FEATURES and method == "classical":
+                    print("Enhancing scores with deep feature analysis...")
+                    enhanced_df = enhance_scores_with_features(processed_df)
+                    enhanced_df.persist(StorageLevel.MEMORY_AND_DISK)
+
+                    if not enhanced_df.rdd.isEmpty():
+                        actual_enhanced_count = enhanced_df.count()
+                        print(f"Received {actual_enhanced_count} enhanced results.")
+
+                        # Update domain reputations based on score changes from the feature analysis
+                        if SparkConfig.WRITE_REPUTATION:
+                            print("Aggregating feature analysis results for domain reputation updates...")
+                            domain_updates_df = enhanced_df.groupBy("domain").agg(
+                                {"score_delta": "avg", "url": "count"}
+                            ).withColumnRenamed("avg(score_delta)", "avg_score_delta") \
+                             .withColumnRenamed("count(url)", "enhanced_url_count")
+
+                            domain_updates_pd = domain_updates_df.toPandas()
+
+                            if not domain_updates_pd.empty:
+                                print(f"Updating reputations for {len(domain_updates_pd)} domains based on feature analysis.")
+                                updates_for_db = {}
+                                for _, row in domain_updates_pd.iterrows():
+                                    if row['domain']: # Ensure domain is not null
+                                        updates_for_db[row['domain']] = {
+                                            'reputation_score': row['avg_score_delta'],
+                                            'total_urls': int(row['enhanced_url_count']),
+                                            'malicious_urls': 0, # Not directly modifying these counts
+                                            'benign_urls': 0
+                                        }
+                                if updates_for_db:
+                                    try:
+                                        ranker = DomainRanker()
+                                        ranker.update_domain_reputation_batch(updates_for_db)
+                                        print("Domain reputations updated successfully from feature analysis.")
+                                    except Exception as e:
+                                        print(f"WARNING: Failed to update domain reputations from feature analysis: {e}")
+
+                        # Join enhanced scores back to the main dataframe
+                        print("Joining enhanced scores back to main dataset...")
+                        enhanced_updates = enhanced_df.select(
+                            col("url").alias("enhanced_url"),
+                            col("enhanced_score"),
+                            col("enhanced_confidence")
+                        )
+
+                        processed_df = processed_df.join(
+                            enhanced_updates,
+                            processed_df.url == enhanced_updates.enhanced_url,
+                            "left_outer"
+                        ).withColumn(
+                            "score",
+                            coalesce(col("enhanced_score"), col("score"))
+                        ).withColumn(
+                            "confidence",
+                            coalesce(col("enhanced_confidence"), col("confidence"))
+                        ).drop("enhanced_url", "enhanced_score", "enhanced_confidence")
+
+                        enhanced_df.unpersist()
+                    else:
+                        print("No URLs were enhanced by the feature analysis process.")
+
             try:
                 if SparkConfig.WRITE_PARQUET:
                     parquet_output_path = os.path.join(model_base_output_path, "parquet")
@@ -276,6 +338,40 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
                     from writers.database_writer import write_to_database
                     execute_with_job_name(spark, f"STEP_5B_WRITE_DATABASE_{model_name}",
                                           lambda: write_to_database(processed_df))
+
+                # Update domain reputations using the batch-aware stats
+                if SparkConfig.WRITE_REPUTATION and method == "classical":
+                    try:
+                        print("\n" + "="*80)
+                        print("UPDATING DOMAIN REPUTATION DATABASE")
+                        print("="*80 + "\n")
+
+                        # The domain stats were already computed. Now collect them to the driver.
+                        print("Collecting domain updates...")
+                        batch_domain_stats_pd = batch_domain_stats_df.toPandas()
+
+                        accumulated_updates = {}
+                        for _, row in batch_domain_stats_pd.iterrows():
+                            domain = row['domain']
+                            if domain and pd.notna(domain):
+                                accumulated_updates[domain] = {
+                                    'reputation_score': row['batch_reputation_score'],
+                                    'total_urls': row['batch_count'],
+                                    'malicious_urls': row['batch_malicious_urls'],
+                                    'benign_urls': row['batch_count'] - row['batch_malicious_urls']
+                                }
+
+                        if accumulated_updates:
+                            print(f"Found updates for {len(accumulated_updates)} domains.")
+                            update_domain_reputations(accumulated_updates)
+                            print("Domain reputation update process completed.")
+                        else:
+                            print("No domain updates to apply for this batch.")
+
+                    except Exception as e:
+                        print(f"WARNING: Failed to update domain reputations: {e}")
+                        import traceback
+                        traceback.print_exc()
             finally:
                 processed_df.unpersist()
         df_raw.unpersist()
@@ -325,29 +421,7 @@ def process_tsv_file(spark: SparkSession, input_path: str, output_path: str):
                 traceback.print_exc()
             finally:
                 training_label_df.unpersist()
-        # Handle domain reputation updates if enabled
-        if SparkConfig.WRITE_REPUTATION:
-            try:
-                print("\n" + "="*80)
-                print("UPDATING DOMAIN REPUTATION DATABASE")
-                print("="*80 + "\n")
-                print("Collecting domain updates from temporary files...")
-                accumulated_updates = collect_domain_updates_from_temp_files()
 
-                if accumulated_updates:
-                    print(f"Found updates for {len(accumulated_updates)} domains")
-                    update_domain_reputations(accumulated_updates)
-                else:
-                    print("No domain updates found")
-
-                cleanup_temp_files()
-                print("Domain reputation update process completed")
-
-            except Exception as e:
-                print(f"WARNING: Failed to update domain reputations: {e}")
-                cleanup_temp_files()  # Still try to clean up temp files
-                import traceback
-                traceback.print_exc()
 
         print("Processing completed successfully")
         return True

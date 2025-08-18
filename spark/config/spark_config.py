@@ -7,9 +7,9 @@ class SparkConfig:
     USE_GOOD_DATA = True
     READ_REPUTATION = True
     WRITE_REPUTATION = True
-    
-    USE_FEATURES = True
-    FEATURES_NUM = 5000 # maybe should be a percentage??
+
+    USE_FEATURES = False
+    FEATURES_SAMPLE_PERCENTAGE = 0.00025 # 0.025% of URLs, aiming for ~5000 from a 20M batch
 
     WRITE_DB = False
     WRITE_PARQUET = False
@@ -17,7 +17,6 @@ class SparkConfig:
 
     WRITE_SUMMARY = True
     USE_LISTS = False
-    USE_FEATURES = False
 
     # ----------------
     USE_METHODS = ["classical"]
