@@ -164,7 +164,7 @@ class SparkConfig:
         "OPENBLAS_NUM_THREADS": "12"
     }
 
-    PROJECT_MODULES = ["config", "spark_logic", "spark", "utils", "models", "writers", "testing"]
+    PROJECT_MODULES = ["config", "spark_logic", "spark", "utils", "models", "writers", "testing", "features"]
     SPARK_LOGGERS = [
         'org.apache.spark',
         'org.sparkproject',

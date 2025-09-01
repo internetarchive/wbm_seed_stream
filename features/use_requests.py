@@ -2,12 +2,10 @@ import requests
 import time
 from typing import Dict
 from urllib.parse import urlparse
-import ssl
-import socket
 
-def analyze_requests(url: str, timeout: int = 10) -> Dict:
+def analyze_requests(url: str, timeout: int = 10) -> Dict:  
     start_time = time.time()
-
+    
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -162,17 +160,9 @@ def check_domain_reputation(url: str) -> Dict:
 
         has_subdomain = len(domain.split('.')) > 2
 
-        quality_domains = [
-            'wikipedia.org', 'github.com', 'stackoverflow.com', 'mozilla.org',
-            'w3.org', 'ieee.org', 'nature.com', 'science.org', 'bbc.com'
-        ]
-        is_quality_domain = any(quality_domain in domain for quality_domain in quality_domains)
-
         reputation_score = 0.5
 
-        if is_quality_domain:
-            reputation_score = 1.0
-        elif is_suspicious_tld:
+        if is_suspicious_tld:
             reputation_score = 0.1
         elif has_subdomain and not any(legit in domain for legit in ['www.', 'blog.', 'news.', 'support.']):
             reputation_score = 0.3
@@ -181,15 +171,15 @@ def check_domain_reputation(url: str) -> Dict:
             'domain': domain,
             'reputation_score': reputation_score,
             'is_suspicious_tld': is_suspicious_tld,
-            'has_subdomain': has_subdomain,
-            'is_quality_domain': is_quality_domain
+            'has_subdomain': has_subdomain
         }
 
     except:
+        print("use_requests failing")
+        
         return {
             'domain': '',
             'reputation_score': 0.0,
             'is_suspicious_tld': True,
-            'has_subdomain': False,
-            'is_quality_domain': False
+            'has_subdomain': False
         }

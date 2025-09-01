@@ -1,10 +1,8 @@
 import requests
 import re
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
 import time
 from typing import Dict
-import hashlib
 
 def get_page_content(url: str, timeout: int = 10) -> Dict:
     try:

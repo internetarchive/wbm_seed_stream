@@ -151,7 +151,6 @@ def enhance_url_features_batch(iterator: Iterator[pd.DataFrame]) -> Iterator[pd.
         if results:
             yield pd.DataFrame(results)
 
-
 def enhance_scores_with_features(processed_df: DataFrame) -> DataFrame:
     MAX_SAMPLE_SIZE = 6500
     SKEW_FACTOR = 100
