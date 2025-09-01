@@ -6,7 +6,6 @@ logs
 *.json
 *.jsonl
 *.txt
-*.png
 data
 indexnow/data
 .jsonl
