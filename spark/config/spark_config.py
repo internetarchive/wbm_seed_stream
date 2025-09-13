@@ -33,7 +33,7 @@ class SparkConfig:
     OUTPUT_BASE_DIRECTORY = "data/output"
     GOOD_DATA_FOLDER = "data/storage/good_data"
 
-    POSTGRESQL_JDBC_DRIVER_PATH = "/Users/akshithchowdary/jars/postgresql-42.7.7.jar"
+    POSTGRESQL_JDBC_DRIVER_PATH = "./jars/postgresql-42.7.7.jar"
 
     SPARK_MEMORY_CONFIG = {
         "master": "local[12]",
