@@ -1,7 +1,5 @@
 # Sentinel: URL Archival and Reputation System
 
-![GSOC'24 WBM](assets/cover.png)
-
 Sentinel is a distributed URL processing and analysis system built with Apache Spark and Python. It assesses the archival potential and trustworthiness of URLs by analyzing content quality, outlinks, archival history, and request-level characteristics. The goal is to preserve valuable URLs while filtering out spam or low-quality ones.
 
 ## Features
